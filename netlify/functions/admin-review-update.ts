@@ -13,11 +13,22 @@ const baseHandler: Handler = async (e) => {
   if (e.httpMethod !== "POST") return { statusCode: 405, headers: CORS };
 
   try {
-    const { id, status } = JSON.parse(e.body || "{}");
+    const { id, status, type } = JSON.parse(e.body || "{}");
     if (!id || !status) return { statusCode: 400, headers: CORS, body: "Missing id or status" };
 
     const updates: any = { status };
     if (status === 'approved') updates.published_at = new Date().toISOString();
+
+    // Course reviews have no approve/reject webhooks.
+    if (type === "course") {
+      if (!["pending", "approved", "rejected"].includes(status)) {
+        return { statusCode: 400, headers: CORS, body: "Invalid status" };
+      }
+      const { data, error } = await s.from("course_reviews").update(updates).eq("id", id).select("id");
+      if (error) throw error;
+      if (!data?.length) return { statusCode: 404, headers: CORS, body: "Review not found" };
+      return { statusCode: 200, headers: CORS, body: JSON.stringify({ ok: true }) };
+    }
 
     const { data, error } = await s.from("product_reviews").update(updates).eq("id", id).select().single();
     if (error) throw error;

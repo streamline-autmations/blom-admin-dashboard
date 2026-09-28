@@ -38,10 +38,11 @@ const baseHandler: Handler = async (event) => {
     }
 
     const supabase = getSupabaseAdmin();
+    const table = body.type === 'course' ? 'course_reviews' : 'product_reviews';
 
     // Verify the review exists and is rejected before deleting
     const { data: review, error: fetchError } = await supabase
-      .from('product_reviews')
+      .from(table)
       .select('id, status')
       .eq('id', body.id)
       .single();
@@ -64,9 +65,10 @@ const baseHandler: Handler = async (event) => {
 
     // Hard delete - permanently remove the review from the database
     const { error } = await supabase
-      .from('product_reviews')
+      .from(table)
       .delete()
-      .eq('id', body.id);
+      .eq('id', body.id)
+      .eq('status', 'rejected');
 
     if (error) {
       console.error('Supabase error:', error);

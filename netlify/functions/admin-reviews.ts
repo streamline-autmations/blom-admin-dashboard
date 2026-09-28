@@ -16,7 +16,8 @@ const baseHandler: Handler = async (e) => {
     const status = qp.status || "";
     const limit = Number(qp.limit || 50);
     const from = Number(qp.from || 0);
-    let q = s.from("product_reviews").select("*").order("created_at", { ascending: false }).range(from, from+limit-1);
+    const table = qp.type === "course" ? "course_reviews" : "product_reviews";
+    let q = s.from(table).select("*").order("created_at", { ascending: false }).range(from, from+limit-1);
     if (status) q = q.eq("status", status);
     const { data, error } = await q;
     if (error) return { statusCode: 500, headers: CORS, body: error.message };

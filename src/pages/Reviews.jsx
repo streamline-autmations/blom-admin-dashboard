@@ -8,16 +8,20 @@ import { useNotifications } from "../contexts/NotificationContext";
 
 export default function Reviews() {
   const [statusFilter, setStatusFilter] = useState("pending");
+  // Product reviews wait for approval; course reviews publish instantly.
+  const [reviewType, setReviewType] = useState("product");
+  const isCourse = reviewType === "course";
   const { showToast } = useToast();
   const { markAsRead } = useNotifications();
   const queryClient = useQueryClient();
 
   const { data: reviews = [], isLoading, error } = useQuery({
-    queryKey: ['reviews', statusFilter],
+    queryKey: ['reviews', reviewType, statusFilter],
     queryFn: async () => {
       const params = new URLSearchParams();
       if (statusFilter !== 'all') params.set('status', statusFilter);
       params.set('limit', '100');
+      if (isCourse) params.set('type', 'course');
 
       const response = await fetch(`/.netlify/functions/admin-reviews?${params}`);
       if (!response.ok) throw new Error('Failed to load reviews');
@@ -31,7 +35,7 @@ export default function Reviews() {
       const response = await fetch('/.netlify/functions/admin-review-update', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, status })
+        body: JSON.stringify({ id, status, type: reviewType })
       });
 
       if (!response.ok) {
@@ -56,7 +60,7 @@ export default function Reviews() {
       const response = await fetch('/.netlify/functions/delete-review', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id })
+        body: JSON.stringify({ id, type: reviewType })
       });
 
       if (!response.ok) {
@@ -335,6 +339,21 @@ export default function Reviews() {
 
       <div className="filter-tabs">
         <button
+          className={`filter-tab ${!isCourse ? 'active' : ''}`}
+          onClick={() => { setReviewType('product'); setStatusFilter('pending'); }}
+        >
+          Products
+        </button>
+        <button
+          className={`filter-tab ${isCourse ? 'active' : ''}`}
+          onClick={() => { setReviewType('course'); setStatusFilter('approved'); }}
+        >
+          Courses
+        </button>
+      </div>
+
+      <div className="filter-tabs">
+        <button
           className={`filter-tab ${statusFilter === 'pending' ? 'active' : ''}`}
           onClick={() => setStatusFilter('pending')}
         >
@@ -362,7 +381,7 @@ export default function Reviews() {
           <table>
             <thead>
               <tr>
-                <th>Product</th>
+                <th>{isCourse ? 'Course / Instructor' : 'Product'}</th>
                 <th>Author</th>
                 <th>Rating</th>
                 <th>Review</th>
@@ -386,17 +405,29 @@ export default function Reviews() {
                 reviews.map(review => (
                   <tr
                     key={review.id}
+                    style={isCourse ? { cursor: 'default' } : undefined}
+                    title={isCourse ? review.body : undefined}
                     onClick={(e) => {
-                      if (!e.target.closest('.action-buttons')) {
+                      if (!isCourse && !e.target.closest('.action-buttons')) {
                         window.location.href = createPageUrl(`ReviewDetail?id=${review.id}`);
                       }
                     }}
                   >
                     <td>
-                      <div className="product-name">{review.product_slug || 'Unknown Product'}</div>
+                      {isCourse ? (
+                        <>
+                          <div className="product-name">{review.course_slug}</div>
+                          <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Trained by {review.instructor_name}</div>
+                        </>
+                      ) : (
+                        <div className="product-name">{review.product_slug || 'Unknown Product'}</div>
+                      )}
                     </td>
                     <td>
                       <div className="author-name">{review.name || review.reviewer_name}</div>
+                      {isCourse && review.reviewer_email && (
+                        <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>{review.reviewer_email}</div>
+                      )}
                     </td>
                     <td>
                       {renderStars(review.rating)}
