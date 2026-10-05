@@ -13,13 +13,10 @@ import {
   // Added
   ShoppingCart,
   FileText,
-  CreditCard,
   // Replaced Warehouse
   MessageSquare,
   Star,
   Users,
-  DollarSign,
-  Tag,
   BarChart3,
   // Added
   // Added
@@ -45,10 +42,7 @@ const navigationGroups = [
     items: [
       { name: "Products", url: "Products", icon: Package },
       { name: "Courses", url: "Courses", icon: BookOpen },
-      { name: "Bundles", url: "Bundles", icon: Layers },
-      { name: "Featured", url: "featured", icon: Sparkles },
-      { name: "Specials", url: "Specials", icon: Tag },
-      { name: "Price Updates", url: "PriceUpdates", icon: DollarSign }
+      { name: "Bundles", url: "Bundles", icon: Layers }
     ]
   },
   {
@@ -57,7 +51,6 @@ const navigationGroups = [
       { name: "Orders", url: "Orders", icon: ShoppingCart },
       { name: "Create In-Store Invoice", url: "in-store-invoices", icon: FileText },
       { name: "Course Bookings", url: "course-bookings", icon: BookOpen },
-      { name: "Sales", url: "Payments", icon: CreditCard },
       // { name: "Stock", url: "Stock", icon: Archive } // Changed from Warehouse to Archive
     ]
   },

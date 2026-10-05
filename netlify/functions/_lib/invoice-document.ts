@@ -155,13 +155,31 @@ export async function generateInvoiceDocument(order: any, normalizedItems: any[]
     const buyerPhone = order.contact_phone || order.buyer_phone || order.customer_phone || ""
     const fulfillment = order.fulfillment_method || order.delivery_method || order.fulfillment_type || order.shipping_method || "-"
     if (isManual) {
-      drawText("BLOM Cosmetics", right - 200, y, 11, true)
+      const detailY = y;
       for (const detail of [buyerName, buyerEmail === "-" ? "" : buyerEmail, buyerPhone].filter(Boolean)) {
-        for (const line of wrapText(detail, 290, 10)) {
+        for (const line of wrapText(detail, right - left - 220, 10)) {
           drawText(line, left, y, 10)
           y += 14
         }
       }
+      // Address matches the Store's current Terms page; contacts match this
+      // existing invoice footer. Server overrides allow confirmed changes.
+      let businessY = detailY - 18;
+      drawText("BLOM Cosmetics", right - 200, businessY, 11, true)
+      businessY += 17;
+      const businessDetails = [
+        ...(process.env.BLOM_BUSINESS_ADDRESS ? process.env.BLOM_BUSINESS_ADDRESS.split(/\r?\n/)
+          : ["34 Horingbek Street", "Randfontein, 1759, South Africa"]),
+        process.env.BLOM_BUSINESS_PHONE || "+27 79 548 3317",
+        process.env.BLOM_BUSINESS_EMAIL || "shopblomcosmetics@gmail.com",
+      ];
+      for (const detail of businessDetails) {
+        for (const line of wrapText(detail, 200, 9)) {
+          drawText(line, right - 200, businessY, 9);
+          businessY += 13;
+        }
+      }
+      y = Math.max(y, businessY);
     } else {
       drawText(buyerName, left, y, 11)
     }
@@ -340,13 +358,8 @@ export async function generateInvoiceDocument(order: any, normalizedItems: any[]
           : calculatedTotal
 
     // Total row
-    if (isManual) {
-      drawText("Subtotal", right - 140, y, 11)
-      drawRightText(money(subtotalAmount), right - 20, y, 11)
-      y += 22
-    }
-    const totalRuleY = y - (isManual ? 14 : 2)
-    drawLine(right - 250, totalRuleY, right, totalRuleY)
+    const totalRuleY = y - 2
+    if (!isManual) drawLine(right - 250, totalRuleY, right, totalRuleY)
     drawText("Total", right - 140, y, 13, true)
     drawRightText(money(finalTotal), right - 20, y, 13, true)
 
@@ -366,13 +379,15 @@ export async function generateInvoiceDocument(order: any, normalizedItems: any[]
         `Account number: ${bankingDetails.account_number}`,
         `Account type: ${bankingDetails.account_type}`,
         `Branch code: ${bankingDetails.branch_code}`,
-        `Please use ${m_payment_id} as your payment reference when making payment.`
       ].flatMap(line => wrapText(line, right - left, 10))
+      const paymentLines = wrapText(`Please use ${m_payment_id} as your payment reference when making payment.`, right - left - 20, 10)
       y += 30
-      y = checkPageBreak(y, 28 + bankLines.length * 15)
+      y = checkPageBreak(y, 43 + (bankLines.length + paymentLines.length) * 15)
       drawText(bankingDetails.is_placeholder === "true" ? "BLOM banking details - PLACEHOLDERS" : "BLOM Cosmetics banking details", left, y, 12, true)
       y += 22
       bankLines.forEach(line => { drawText(line, left, y, 10); y += 15 })
+      y += 15
+      paymentLines.forEach(line => { drawText(line, left, y, 10, true, rgb(0, 0, 0)); y += 15 })
     }
 
     // Add page numbers to all pages

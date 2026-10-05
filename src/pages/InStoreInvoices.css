@@ -1,0 +1,11 @@
+/* Use the shell's working semantic tokens; its root card/border aliases are circular. */
+.in-store-invoices {
+  --card: var(--popover);
+  --border: var(--input);
+}
+
+/* The global mobile flex-wrap rule switches forms to column. Keep the search
+   field's flex-basis on the horizontal axis so it cannot create a tall blank gap. */
+.in-store-invoices .invoice-history-search {
+  flex-direction: row !important;
+}

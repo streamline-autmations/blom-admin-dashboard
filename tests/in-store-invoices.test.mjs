@@ -51,11 +51,12 @@ function mockDb({ role = 'staff', responses = {}, rpcResult = { data: id, error:
     from(table) {
       const call = { table, filters: [] }; calls.push(call);
       const result = () => table === 'profiles' ? { data: { app_role: role }, error: null }
-        : responses[table] || { data: invoice, error: null };
+        : responses[table] || { data: ['products', 'bundles', 'courses'].includes(table) ? [] : invoice, error: null };
       const query = {
         select(value) { call.select = value; return query; },
         eq(...args) { call.filters.push(['eq', ...args]); return query; },
         or(value) { call.filters.push(['or', value]); return query; },
+        ilike(...args) { call.filters.push(['ilike', ...args]); return query; },
         order(...args) { call.filters.push(['order', ...args]); return query; },
         limit(value) { call.limit = value; return query; },
         range(...args) { call.range = args; return query; },
@@ -97,7 +98,7 @@ test('requires a session and an existing owner/staff role for invoice access', a
   assert.equal((await manual.handler(event('DELETE'))).statusCode, 405);
 });
 
-test('searches the existing name/SKU fields with quoted filter input and excludes invalid prices', async () => {
+test('searches catalog names only with literal filter input and excludes invalid prices', async () => {
   const calls = mockDb({ responses: { products: { data: [
     { id: productId, name: 'Product', price: 125 }, { id, name: 'Unpriced', price: null },
   ], error: null } } });
@@ -106,8 +107,39 @@ test('searches the existing name/SKU fields with quoted filter input and exclude
   assert.equal(JSON.parse(response.body).data.length, 1);
   const productCall = calls.find(call => call.table === 'products');
   assert.equal(productCall.limit, 20);
-  assert.match(productCall.filters.find(filter => filter[1].startsWith('name.ilike'))[1], /sku\.ilike/);
-  assert.match(productCall.filters.find(filter => filter[1].startsWith('name.ilike'))[1], /\\_/);
+  assert.deepEqual(productCall.filters.find(filter => filter[0] === 'ilike'), ['ilike', 'name', '%shade,sku).eq."\\_\\%%']);
+  assert.ok(!productCall.select.includes('sku'));
+  assert.ok(!productCall.filters.some(filter => String(filter).includes('sku.ilike')));
+});
+
+test('includes existing bundles and courses with package prices and catalog types', async () => {
+  mockDb({ responses: {
+    products: { data: [{ id: productId, name: 'Acrylic powder', price: 125 }], error: null },
+    bundles: { data: [{ id: productId, name: 'Acrylic kit', price_cents: 54950 }, { id, name: 'Unpriced kit', price_cents: null }], error: null },
+    courses: { data: [
+      { id, title: 'Acrylic training', price: 7600, packages: [{ name: 'Standard', price: 7600 }, { name: 'Deluxe', price: 9900 }] },
+      { id: productId, title: 'Acrylic workshop', price: 1850, packages: null },
+    ], error: null },
+  } });
+  const data = JSON.parse((await manual.handler(event('GET', { action: 'products', q: 'Acrylic' }))).body).data;
+  assert.equal(data.length, 5);
+  assert.equal(data.find(item => item.item_type === 'bundle').price, 549.5);
+  assert.deepEqual(data.filter(item => item.course_package_index != null).map(item => [item.name, item.price, item.course_package_index]), [
+    ['Acrylic training — Deluxe', 9900, 1], ['Acrylic training — Standard', 7600, 0],
+  ]);
+  assert.equal(data.find(item => item.name === 'Acrylic workshop').item_type, 'course');
+});
+
+test('invoice history uses bounded pages and safely searches number/customer only', async () => {
+  const calls = mockDb({ responses: { in_store_invoices: { data: [], count: 150, error: null } } });
+  const result = JSON.parse((await manual.handler(event('GET', { page: '3', q: 'Jane,"_%' }))).body);
+  const query = calls.find(call => call.table === 'in_store_invoices');
+  assert.deepEqual(query.range, [10, 14]);
+  assert.equal(result.page_size, 5);
+  assert.equal(result.count, 150);
+  assert.match(query.filters.find(filter => filter[0] === 'or')[1], /^invoice_number\.ilike\./);
+  assert.match(query.filters.find(filter => filter[0] === 'or')[1], /customer_name\.ilike\./);
+  assert.match(query.filters.find(filter => filter[0] === 'or')[1], /\\"\\_\\%/);
 });
 
 test('validates requests, strips browser totals and uses the atomic snapshot RPC', async () => {
@@ -122,10 +154,20 @@ test('validates requests, strips browser totals and uses the atomic snapshot RPC
   assert.equal(rpc.args.p_request_id, id);
   assert.equal(rpc.args.total, undefined);
   assert.equal(rpc.args.invoice_number, undefined);
-  assert.deepEqual(rpc.args.p_items, submission.items);
+  assert.deepEqual(rpc.args.p_items, submission.items.map(item => ({ ...item, item_type: 'product', course_package_index: null })));
   assert.equal(rpc.args.p_banking_details.is_placeholder, 'true');
   assert.equal(JSON.parse(response.body).invoice.total, 250);
   assert.ok(!calls.some(call => ['orders', 'stock_movements', 'payments'].includes(call.table)));
+});
+
+test('typed lines preserve bundle/course identity and reject forged types/packages', async () => {
+  const typed = [{ ...submission.items[0], item_type: 'bundle' }, { ...submission.items[0], item_type: 'course', course_package_index: 1 }];
+  const calls = mockDb();
+  assert.equal((await manual.handler(event('POST', {}, { ...submission, items: typed }))).statusCode, 201);
+  assert.deepEqual(calls.find(call => call.rpc).args.p_items, typed.map(item => ({ ...item, course_package_index: item.course_package_index ?? null })));
+  for (const fields of [{ item_type: 'payment' }, { item_type: 'bundle', course_package_index: 0 }, { item_type: 'course', course_package_index: -1 }, { item_type: 'course', course_package_index: 0.5 }]) {
+    assert.equal((await manual.handler(event('POST', {}, { ...submission, items: [{ ...submission.items[0], ...fields }] }))).statusCode, 400);
+  }
 });
 
 test('reports stale prices and invalid invoice IDs without saving or rendering', async () => {
@@ -161,6 +203,9 @@ test('manual PDF uses saved names/prices, branding, placeholder banking and actu
   for (const value of ['INVOICE', 'INV-20261005-001', 'Jane Smith', 'Saved product name', 'R 125.00', 'R 250.00', 'BLOM Cosmetics', 'PLACEHOLDERS', 'Account number: To be confirmed', 'Please use INV-20261005-001 as your payment reference']) assert.ok(text.includes(value), value);
   assert.ok(!text.includes('FREE SHIPPING'));
   assert.ok(!text.includes('Fulfillment'));
+  assert.ok(!text.includes('Subtotal'));
+  assert.ok(text.includes('34 Horingbek Street'));
+  assert.ok(text.includes('+27 79 548 3317'));
   assert.ok(!calls.some(call => call.table === 'products'));
 });
 

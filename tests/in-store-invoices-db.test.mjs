@@ -10,12 +10,17 @@ test('invoice migration: atomic snapshots, validation, retries, counters and acc
   skip: !process.env.BLOM_TEST_PGLITE_MODULE,
 }, async () => {
   const { PGlite } = await import(pathToFileURL(process.env.BLOM_TEST_PGLITE_MODULE).href);
-  const db = new PGlite();
+  const { pg_trgm } = await import(pathToFileURL(process.env.BLOM_TEST_PGLITE_MODULE.replace(/index\.js$/, 'contrib/pg_trgm.js')).href);
+  const db = new PGlite({ extensions: { pg_trgm } });
   try {
     await db.exec(`
       CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role BYPASSRLS;
       CREATE TABLE products (id uuid PRIMARY KEY, name text, sku text, price numeric,
         is_active boolean, status text);
+      CREATE TABLE bundles (id uuid PRIMARY KEY, name text, sku text, price_cents integer,
+        is_active boolean, status text);
+      CREATE TABLE courses (id uuid PRIMARY KEY, title text, price numeric,
+        is_active boolean, packages jsonb);
     `);
     await db.exec(await readFile(new URL('../db/migrations/20261005_create_in_store_invoices.sql', import.meta.url), 'utf8'));
     const product = randomUUID();
@@ -36,6 +41,9 @@ test('invoice migration: atomic snapshots, validation, retries, counters and acc
     assert.equal(invoice.invoice_number, `INV-${date}-001`);
     assert.equal(Number(invoice.total), 251.10);
     assert.equal(invoice.customer_phone, null);
+    // Apply the follow-up to an existing invoice, proving backward compatibility.
+    await db.exec(await readFile(new URL('../db/migrations/20261005_extend_in_store_invoice_catalog.sql', import.meta.url), 'utf8'));
+    assert.equal((await db.query('SELECT item_type FROM in_store_invoice_items WHERE invoice_id=$1', [first])).rows[0].item_type, 'product');
 
     const concurrentIds = await Promise.all(Array.from({ length: 20 }, () => create()));
     assert.equal(new Set(concurrentIds).size, 20);
@@ -68,6 +76,33 @@ test('invoice migration: atomic snapshots, validation, retries, counters and acc
     await db.exec('UPDATE in_store_invoice_sequences SET last_number=999');
     const thousand = await create(randomUUID(), currentItems);
     assert.equal((await db.query('SELECT invoice_number FROM in_store_invoices WHERE id=$1', [thousand])).rows[0].invoice_number, `INV-${date}-1000`);
+
+    // Deliberately share the UUID across catalogs: types must keep identities separate.
+    const course = randomUUID();
+    await db.query('INSERT INTO bundles VALUES ($1,$2,$3,54950,true,$4)', [product, 'Bundle snapshot', 'B-1', 'active']);
+    await db.query('INSERT INTO courses VALUES ($1,$2,7600,true,$3::jsonb)', [course, 'Training snapshot', JSON.stringify([{ name: 'Standard', price: 7600 }, { name: 'Deluxe', price: 9900 }])]);
+    const mixedItems = [
+      ...currentItems,
+      { product_id: product, item_type: 'bundle', quantity: 2, expected_price_cents: 54950 },
+      { product_id: course, item_type: 'course', course_package_index: 0, quantity: 1, expected_price_cents: 760000 },
+      { product_id: course, item_type: 'course', course_package_index: 1, quantity: 1, expected_price_cents: 990000 },
+    ];
+    const mixed = await create(randomUUID(), mixedItems);
+    const lines = (await db.query('SELECT * FROM in_store_invoice_items WHERE invoice_id=$1 ORDER BY position', [mixed])).rows;
+    assert.deepEqual(lines.map(line => line.item_type), ['product', 'bundle', 'course', 'course']);
+    assert.equal(lines[3].product_name, 'Training snapshot — Deluxe');
+    assert.equal(Number((await db.query('SELECT total FROM in_store_invoices WHERE id=$1', [mixed])).rows[0].total), 20597);
+    await assert.rejects(create(randomUUID(), [mixedItems[1], mixedItems[1]]), /duplicate products/);
+    await assert.rejects(create(randomUUID(), [{ ...mixedItems[2], course_package_index: null }]), /Choose a course package/);
+    await assert.rejects(create(randomUUID(), [{ ...mixedItems[2], course_package_index: 99 }]), /no longer available/);
+    await assert.rejects(create(randomUUID(), [{ ...mixedItems[1], course_package_index: 0 }]), /Invalid invoice item/);
+    await assert.rejects(create(randomUUID(), [{ ...mixedItems[1], item_type: 'forged' }]), /Invalid invoice item/);
+    await db.query('UPDATE bundles SET price_cents=1000 WHERE id=$1', [product]);
+    await assert.rejects(create(randomUUID(), [mixedItems[1]]), /price changed/);
+    await db.query('DELETE FROM courses WHERE id=$1', [course]);
+    const savedCourse = (await db.query('SELECT * FROM in_store_invoice_items WHERE invoice_id=$1 AND position=4', [mixed])).rows[0];
+    assert.equal(savedCourse.product_name, 'Training snapshot — Deluxe');
+    assert.equal(Number(savedCourse.unit_price), 9900);
 
     await db.exec('SET ROLE authenticated');
     await assert.rejects(db.query('SELECT * FROM in_store_invoices'), /permission denied/);

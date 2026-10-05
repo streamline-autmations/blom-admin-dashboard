@@ -7,6 +7,11 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const headers = { "Content-Type": "application/json", "Cache-Control": "no-store" };
 const json = (statusCode: number, data: unknown) => ({ statusCode, headers, body: JSON.stringify(data) });
 const selectInvoice = "*,in_store_invoice_items(*)";
+const pageSize = 5;
+const itemTypes = new Set(["product", "bundle", "course"]);
+const validPrice = (price: unknown) => (typeof price === 'number' || (typeof price === 'string' && !!price.trim()))
+  && Number.isFinite(Number(price)) && Number(price) >= 0;
+const searchLiteral = (value: string) => value.replace(/\\/g, "\\\\").replace(/[%_]/g, "\\$&");
 
 function bankingDetails() {
   const details = {
@@ -37,20 +42,32 @@ export const handler: Handler = async event => {
 
   try {
     const query = event.queryStringParameters || {};
-    // Existing product table and Rand price contract; no parallel catalog or promotions.
+    // Existing catalogs only. Bundles store cents; products/courses store Rand.
     if (event.httpMethod === "GET" && query.action === "products") {
       const search = (query.q || "").trim().slice(0, 100);
       if (!search) return json(200, { data: [] });
-      // Quote the PostgREST value and escape wildcard/filter syntax from user input.
-      const literal = search.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/[%_]/g, "\\$&");
-      const pattern = `"%${literal}%"`;
-      const { data, error } = await db.from("products").select("id,name,sku,price")
-        .eq("is_active", true).or("status.is.null,status.not.in.(archived,deleted)")
-        .or(`name.ilike.${pattern},sku.ilike.${pattern}`).order("name").limit(20);
-      if (error) throw error;
-      return json(200, { data: (data || []).filter(product =>
-        product.price != null && Number.isFinite(Number(product.price)) && Number(product.price) >= 0
-      ) });
+      const pattern = `%${searchLiteral(search)}%`;
+      const results = await Promise.all([
+        db.from("products").select("id,name,price").eq("is_active", true)
+          .or("status.is.null,status.not.in.(archived,deleted)").ilike("name", pattern).order("name").limit(20),
+        db.from("bundles").select("id,name,price_cents").eq("is_active", true)
+          .or("status.is.null,status.not.in.(archived,deleted)").ilike("name", pattern).order("name").limit(20),
+        db.from("courses").select("id,title,price,packages").eq("is_active", true)
+          .ilike("title", pattern).order("title").limit(20),
+      ]);
+      for (const result of results) if (result.error) throw result.error;
+      const data = [
+        ...(results[0].data || []).filter(product => validPrice(product.price)).map(product => ({ ...product, item_type: "product" })),
+        ...(results[1].data || []).filter(bundle => validPrice(bundle.price_cents)).map(bundle => ({ id: bundle.id, name: bundle.name, price: Number(bundle.price_cents) / 100, item_type: "bundle" })),
+        ...(results[2].data || []).flatMap(course => {
+          if (Array.isArray(course.packages) && course.packages.length) {
+            return course.packages.flatMap((pkg, index) => validPrice(pkg?.price) && typeof pkg?.name === "string" && pkg.name.trim()
+              ? [{ id: course.id, name: `${course.title} — ${pkg.name}`, price: Number(pkg.price), item_type: "course", course_package_index: index }] : []);
+          }
+          return validPrice(course.price) ? [{ id: course.id, name: course.title, price: Number(course.price), item_type: "course" }] : [];
+        }),
+      ].sort((a, b) => a.name.localeCompare(b.name));
+      return json(200, { data });
     }
 
     let invoiceId = query.id;
@@ -66,6 +83,9 @@ export const handler: Handler = async event => {
         || (customer_email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customer_email.trim()))
         || !Array.isArray(items) || items.length < 1 || items.length > 100
         || items.some(item => !item || !uuid.test(item.product_id || "")
+          || !itemTypes.has(item.item_type ?? "product")
+          || (item.course_package_index != null && ((item.item_type ?? "product") !== "course"
+            || !Number.isInteger(item.course_package_index) || item.course_package_index < 0 || item.course_package_index > 999))
           || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 9999
           || !Number.isSafeInteger(item.expected_price_cents) || item.expected_price_cents < 0)) {
         return json(400, { error: "Enter a customer name, valid contact details and product quantities (1–9999)." });
@@ -75,7 +95,8 @@ export const handler: Handler = async event => {
         p_request_id: request_id, p_created_by: auth.userId,
         p_customer_name: customer_name.trim(), p_customer_phone: customer_phone.trim(),
         p_customer_email: customer_email.trim(),
-        p_items: items.map(item => ({ product_id: item.product_id, quantity: item.quantity, expected_price_cents: item.expected_price_cents })),
+        p_items: items.map(item => ({ product_id: item.product_id, item_type: item.item_type ?? "product",
+          course_package_index: item.course_package_index ?? null, quantity: item.quantity, expected_price_cents: item.expected_price_cents })),
         p_banking_details: bank,
       });
       if (error) {
@@ -109,12 +130,17 @@ export const handler: Handler = async event => {
     }
 
     const page = Math.max(1, Math.min(100000, Number.parseInt(query.page || "1", 10) || 1));
-    const { data, error, count } = await db.from("in_store_invoices")
+    let historyQuery = db.from("in_store_invoices")
       .select("id,invoice_number,created_at,customer_name,total", { count: "exact" })
-      .order("created_at", { ascending: false }).order("id")
-      .range((page - 1) * 20, page * 20 - 1);
+      .order("created_at", { ascending: false }).order("id");
+    const historySearch = (query.q || "").trim().slice(0, 100);
+    if (historySearch) {
+      const pattern = `"%${searchLiteral(historySearch).replace(/"/g, '\\"')}%"`;
+      historyQuery = historyQuery.or(`invoice_number.ilike.${pattern},customer_name.ilike.${pattern}`);
+    }
+    const { data, error, count } = await historyQuery.range((page - 1) * pageSize, page * pageSize - 1);
     if (error) throw error;
-    return json(200, { data, count, banking_configured: bankingDetails().is_placeholder !== "true" });
+    return json(200, { data, count, page_size: pageSize, banking_configured: bankingDetails().is_placeholder !== "true" });
   } catch (error) {
     console.error("In-store invoice request failed:", error instanceof Error ? error.message : error);
     return json(500, { error: "Unable to load or save this invoice. Please try again. If this continues, check the invoice migration and server configuration." });

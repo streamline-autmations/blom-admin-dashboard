@@ -7,8 +7,11 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { moneyZAR, dateTime } from '@/components/formatUtils';
 import { invoiceRequest, openInvoicePdf } from '@/lib/inStoreInvoices';
+import './InStoreInvoices.css';
 
 const money = value => moneyZAR(Math.round(Number(value) * 100));
+const itemKey = item => `${item.item_type || 'product'}:${item.product_id || item.id}:${item.course_package_index ?? ''}`;
+const itemLabel = type => ({ product: 'Product', bundle: 'Bundle', course: 'Course' })[type || 'product'];
 
 export default function InStoreInvoices() {
   const { id } = useParams();
@@ -19,6 +22,8 @@ export default function InStoreInvoices() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [saved, setSaved] = useState(null);
   const [page, setPage] = useState(1);
+  const [historySearch, setHistorySearch] = useState('');
+  const [historyFilter, setHistoryFilter] = useState('');
   const [busy, setBusy] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
   const [error, setError] = useState('');
@@ -27,13 +32,19 @@ export default function InStoreInvoices() {
   const submitting = useRef(false);
   const errorRef = useRef(null);
   const savedRef = useRef(null);
+  const historyRef = useRef(null);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 250);
     return () => window.clearTimeout(timer);
   }, [search]);
   useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
-  useEffect(() => { if (saved) savedRef.current?.focus(); }, [saved]);
+  useEffect(() => {
+    if (saved) {
+      savedRef.current?.focus();
+      if (historyRef.current) historyRef.current.open = true;
+    }
+  }, [saved]);
   useEffect(() => {
     if (id) {
       setSaved(null); setItems([]); setSearch(''); setDebouncedSearch(''); setError('');
@@ -43,7 +54,8 @@ export default function InStoreInvoices() {
   }, [id]);
 
   const history = useQuery({
-    queryKey: ['inStoreInvoices', page], queryFn: () => invoiceRequest(`?page=${page}`),
+    queryKey: ['inStoreInvoices', page, historyFilter],
+    queryFn: ({ signal }) => invoiceRequest(`?page=${page}&q=${encodeURIComponent(historyFilter)}`, { signal }),
   });
   const products = useQuery({
     queryKey: ['invoiceProducts', debouncedSearch],
@@ -61,23 +73,25 @@ export default function InStoreInvoices() {
 
   const addProduct = product => {
     setItems(previous => {
-      const existing = previous.find(item => item.product_id === product.id);
+      const existing = previous.find(item => itemKey(item) === itemKey(product));
       if (existing) return previous.map(item => item === existing ? { ...item, quantity: Math.min(9999, item.quantity + 1) } : item);
       if (previous.length >= 100) return previous;
-      return [...previous, { product_id: product.id, product_name: product.name, sku: product.sku,
+      return [...previous, { product_id: product.id, product_name: product.name, item_type: product.item_type || 'product',
+        course_package_index: product.course_package_index ?? null,
         price_cents: Math.round(Number(product.price) * 100), quantity: 1 }];
     });
   };
-  const changeQuantity = (productId, quantity) => {
+  const changeQuantity = (key, quantity) => {
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > 9999) return;
-    setItems(previous => previous.map(item => item.product_id === productId ? { ...item, quantity } : item));
+    setItems(previous => previous.map(item => itemKey(item) === key ? { ...item, quantity } : item));
   };
 
   const createInvoice = async event => {
     event.preventDefault();
     if (submitting.current) return;
-    if (!items.length) { setError('Search for a product and add it to the invoice.'); return; }
+    if (!items.length) { setError('Search for an item and add it to the invoice.'); return; }
     const body = { ...customer, items: items.map(item => ({ product_id: item.product_id,
+      item_type: item.item_type, course_package_index: item.course_package_index,
       quantity: item.quantity, expected_price_cents: item.price_cents })) };
     const serialized = JSON.stringify(body);
     // A retry of unchanged input keeps its request ID; edited input is a new submission.
@@ -110,11 +124,11 @@ export default function InStoreInvoices() {
   };
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6 text-foreground">
+    <div className="in-store-invoices mx-auto max-w-6xl space-y-6 text-foreground">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold">{invoice ? invoice.invoice_number : id ? 'In-Store Invoice' : 'Create In-Store Invoice'}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">{invoice ? `Created ${dateTime(invoice.created_at)}` : 'Add products and customer details, then generate your invoice.'}</p>
+          <p className="mt-1 text-sm text-muted-foreground">{invoice ? `Created ${dateTime(invoice.created_at)}` : 'Add items and customer details, then generate your invoice.'}</p>
         </div>
         {(saved || id) && (id ? <Button asChild variant="outline"><Link to="/in-store-invoices">Create In-Store Invoice</Link></Button>
           : <Button type="button" variant="outline" onClick={newInvoice}><Plus aria-hidden="true" />Create another invoice</Button>)}
@@ -127,35 +141,35 @@ export default function InStoreInvoices() {
 
       {(!id || invoice) && <form onSubmit={createInvoice} className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
         <section className="min-w-0 rounded-lg border border-border bg-card p-4 sm:p-6" aria-labelledby="invoice-products-heading">
-          <h2 id="invoice-products-heading" className="text-lg font-semibold">{readOnly ? 'Invoice items' : 'Products'}</h2>
+          <h2 id="invoice-products-heading" className="text-lg font-semibold">{readOnly ? 'Invoice items' : 'Add items'}</h2>
           {!readOnly && <fieldset disabled={busy} className="mt-4">
-            <Label htmlFor="invoice-search">Search by product name or SKU</Label>
+            <Label htmlFor="invoice-search">Search products, bundles and courses by name</Label>
             <div className="relative mt-2">
               <Search aria-hidden="true" className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-              <Input id="invoice-search" type="search" value={search} maxLength={100} onChange={event => setSearch(event.target.value)} className="h-11 pl-9" placeholder="Search BLOM products…" autoComplete="off" />
+              <Input id="invoice-search" type="search" value={search} maxLength={100} onChange={event => setSearch(event.target.value)} className="h-11 pl-9" placeholder="Start typing a name…" autoComplete="off" />
             </div>
             {search.trim() && <div className="mt-3 max-h-64 overflow-y-auto rounded-md border border-border" aria-label="Product search results">
               {(products.isFetching || search.trim() !== debouncedSearch) ? <p role="status" className="p-3 text-sm text-muted-foreground">Searching products…</p>
                 : products.isError ? <div role="alert" className="p-3 text-sm">{products.error.message}<Button type="button" variant="ghost" onClick={() => products.refetch()}>Retry</Button></div>
-                : products.data?.data?.length ? products.data.data.map(product => <div key={product.id} className="flex items-center justify-between gap-3 border-b border-border p-3 last:border-0">
-                  <div className="min-w-0"><p className="break-words text-sm font-medium">{product.name}</p><p className="text-xs text-muted-foreground">{product.sku ? `${product.sku} · ` : ''}{money(product.price)}</p></div>
-                  <Button type="button" variant="outline" disabled={items.length >= 100 && !items.some(item => item.product_id === product.id)} onClick={() => addProduct(product)} aria-label={`Add ${product.name}`}><Plus aria-hidden="true" />Add</Button>
-                </div>) : <p role="status" className="p-3 text-sm text-muted-foreground">No products found. Try another name or SKU.</p>}
+                : products.data?.data?.length ? products.data.data.map(product => <div key={itemKey(product)} className="flex items-center justify-between gap-3 border-b border-border p-3 last:border-0">
+                  <div className="min-w-0"><p className="break-words text-sm font-medium">{product.name}</p><p className="text-xs text-muted-foreground">{itemLabel(product.item_type)} · {money(product.price)}</p></div>
+                  <Button type="button" variant="outline" disabled={items.length >= 100 && !items.some(item => itemKey(item) === itemKey(product))} onClick={() => addProduct(product)} aria-label={`Add ${product.name}`}><Plus aria-hidden="true" />Add</Button>
+                </div>) : <p role="status" className="p-3 text-sm text-muted-foreground">No items found. Try another name.</p>}
             </div>}
           </fieldset>}
 
           <div className="mt-6 space-y-4">
-            {!lines.length && <p className="border-t border-border py-8 text-sm text-muted-foreground">Search for a product above to add your first invoice item.</p>}
-            {lines.map(item => <div key={item.product_id} className="grid gap-3 border-t border-border pt-4 sm:grid-cols-[minmax(0,1fr)_auto]">
-              <div className="min-w-0"><p className="break-words font-medium">{item.product_name}</p><p className="mt-1 text-sm text-muted-foreground">Unit price: {readOnly ? money(item.unit_price) : moneyZAR(item.price_cents)}</p></div>
+            {!lines.length && <p className="border-t border-border py-8 text-sm text-muted-foreground">Search by name above to add your first invoice item.</p>}
+            {lines.map(item => <div key={itemKey(item)} className="grid gap-3 border-t border-border pt-4 sm:grid-cols-[minmax(0,1fr)_auto]">
+              <div className="min-w-0"><p className="break-words font-medium">{item.product_name}</p><p className="mt-1 text-sm text-muted-foreground">{itemLabel(item.item_type)} · Unit price: {readOnly ? money(item.unit_price) : moneyZAR(item.price_cents)}</p></div>
               <div className="flex flex-wrap items-center justify-between gap-3 sm:justify-end">
                 {readOnly ? <span className="text-sm">Qty: {item.quantity}</span> : <div className="flex items-center gap-1">
-                  <Button type="button" variant="outline" className="h-11 w-11 px-0" disabled={busy || item.quantity <= 1} aria-label={`Decrease ${item.product_name} quantity`} onClick={() => changeQuantity(item.product_id, item.quantity - 1)}><Minus aria-hidden="true" /></Button>
-                  <Input type="number" min={1} max={9999} step={1} inputMode="numeric" required disabled={busy} value={item.quantity} aria-label={`Quantity for ${item.product_name}`} onChange={event => changeQuantity(item.product_id, Number(event.target.value))} className="h-11 w-16 px-1 text-center" />
-                  <Button type="button" variant="outline" className="h-11 w-11 px-0" disabled={busy || item.quantity >= 9999} aria-label={`Increase ${item.product_name} quantity`} onClick={() => changeQuantity(item.product_id, item.quantity + 1)}><Plus aria-hidden="true" /></Button>
+                  <Button type="button" variant="outline" className="h-11 w-11 px-0" disabled={busy || item.quantity <= 1} aria-label={`Decrease ${item.product_name} quantity`} onClick={() => changeQuantity(itemKey(item), item.quantity - 1)}><Minus aria-hidden="true" /></Button>
+                  <Input type="number" min={1} max={9999} step={1} inputMode="numeric" required disabled={busy} value={item.quantity} aria-label={`Quantity for ${item.product_name}`} onChange={event => changeQuantity(itemKey(item), Number(event.target.value))} className="h-11 w-16 px-1 text-center" />
+                  <Button type="button" variant="outline" className="h-11 w-11 px-0" disabled={busy || item.quantity >= 9999} aria-label={`Increase ${item.product_name} quantity`} onClick={() => changeQuantity(itemKey(item), item.quantity + 1)}><Plus aria-hidden="true" /></Button>
                 </div>}
                 <span className="min-w-20 text-right font-medium tabular-nums">{readOnly ? money(item.line_total) : moneyZAR(item.price_cents * item.quantity)}</span>
-                {!readOnly && <Button type="button" variant="ghost" className="h-11 w-11 px-0" disabled={busy} aria-label={`Remove ${item.product_name}`} onClick={() => setItems(previous => previous.filter(line => line.product_id !== item.product_id))}><Trash2 aria-hidden="true" /></Button>}
+                {!readOnly && <Button type="button" variant="ghost" className="h-11 w-11 px-0" disabled={busy} aria-label={`Remove ${item.product_name}`} onClick={() => setItems(previous => previous.filter(line => itemKey(line) !== itemKey(item)))}><Trash2 aria-hidden="true" /></Button>}
               </div>
             </div>)}
           </div>
@@ -169,7 +183,6 @@ export default function InStoreInvoices() {
             <div><Label htmlFor="invoice-email">Email <span className="font-normal text-muted-foreground">(optional)</span></Label><Input id="invoice-email" className="mt-2 h-11" type="email" autoComplete="email" maxLength={254} value={currentCustomer.customer_email || ''} onChange={event => setCustomer(previous => ({ ...previous, customer_email: event.target.value }))} /></div>
           </fieldset>
           <dl aria-live="polite" className="space-y-3 border-t border-border pt-5 tabular-nums">
-            <div className="flex justify-between gap-3 text-sm"><dt>Subtotal</dt><dd>{money(total)}</dd></div>
             <div className="flex justify-between gap-3 text-xl font-semibold"><dt>Total</dt><dd>{money(total)}</dd></div>
           </dl>
           {((invoice?.banking_details?.is_placeholder === 'true') || (!readOnly && history.data?.banking_configured === false)) && <p className="text-sm text-muted-foreground">Banking details are placeholders. Confirm them before sharing this invoice for payment.</p>}
@@ -181,23 +194,34 @@ export default function InStoreInvoices() {
         </aside>
       </form>}
 
-      <section className="rounded-lg border border-border bg-card p-4 sm:p-6" aria-labelledby="saved-invoices-heading">
-        <h2 id="saved-invoices-heading" className="text-lg font-semibold">Saved in-store invoices</h2>
+      <details ref={historyRef} className="min-w-0 rounded-lg border border-border bg-card p-4 sm:p-6">
+        <summary className="cursor-pointer rounded-sm text-lg font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          Saved invoices{history.data?.count != null && !historyFilter ? ` (${history.data.count})` : ''}
+        </summary>
+        <form className="invoice-history-search mt-4 flex flex-wrap items-end gap-2" onSubmit={event => { event.preventDefault(); setHistoryFilter(historySearch.trim()); setPage(1); }}>
+          <div className="min-w-0 flex-1 basis-64">
+            <Label htmlFor="invoice-history-search">Find by invoice number or customer name</Label>
+            <Input id="invoice-history-search" type="search" className="mt-2 h-11" value={historySearch} maxLength={100} onChange={event => setHistorySearch(event.target.value)} placeholder="Invoice number or customer name…" />
+          </div>
+          <Button type="submit" className="h-11" disabled={history.isFetching}>Search</Button>
+          {historyFilter && <Button type="button" className="h-11" variant="outline" onClick={() => { setHistorySearch(''); setHistoryFilter(''); setPage(1); }}>Clear</Button>}
+        </form>
+        {historyFilter && <p className="mt-3 break-words text-sm text-muted-foreground">Results for “{historyFilter}”</p>}
         {history.isPending ? <p role="status" className="mt-4 text-sm">Loading invoices…</p>
           : history.isError ? <div role="alert" className="mt-4 text-sm">{history.error.message}<Button type="button" variant="ghost" onClick={() => history.refetch()}>Retry</Button></div>
-          : !history.data?.data?.length ? <p className="mt-4 text-sm text-muted-foreground">Your saved invoices will appear here.</p>
+          : !history.data?.data?.length ? <p role="status" className="mt-4 text-sm text-muted-foreground">{historyFilter ? 'No invoices match this search.' : 'Your saved invoices will appear here.'}</p>
           : <ul className="mt-4 divide-y divide-border">{history.data.data.map(record => <li key={record.id}>
             <Link to={`/in-store-invoices/${record.id}`} className="flex flex-wrap items-center justify-between gap-3 rounded-md py-4 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-              <div className="min-w-0"><p className="font-medium">{record.invoice_number}</p><p className="break-words text-sm text-muted-foreground">{record.customer_name} · {dateTime(record.created_at)}</p></div>
-              <span className="font-medium tabular-nums">{money(record.total)}</span>
+              <div className="min-w-0 flex-1 basis-48"><p className="break-words font-medium">{record.invoice_number}</p><p className="break-words text-sm">{record.customer_name}</p><p className="text-xs text-muted-foreground">{dateTime(record.created_at)}</p></div>
+              <span className="shrink-0 font-medium tabular-nums">{money(record.total)} <span className="ml-2 text-sm text-muted-foreground">View →</span></span>
             </Link>
           </li>)}</ul>}
-        {(history.data?.count || 0) > 20 && <div className="mt-4 flex items-center justify-between gap-3">
-          <Button type="button" variant="outline" disabled={page === 1} onClick={() => setPage(previous => previous - 1)}>Previous</Button>
-          <span className="text-sm text-muted-foreground">Page {page} of {Math.ceil(history.data.count / 20)}</span>
-          <Button type="button" variant="outline" disabled={page * 20 >= history.data.count} onClick={() => setPage(previous => previous + 1)}>Next</Button>
+        {(history.data?.count || 0) > (history.data?.page_size || 5) && <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+          <Button type="button" variant="outline" className="h-11" disabled={page === 1 || history.isFetching} onClick={() => setPage(previous => previous - 1)}>Previous</Button>
+          <span className="text-sm text-muted-foreground">{page} / {Math.ceil(history.data.count / (history.data.page_size || 5))}</span>
+          <Button type="button" variant="outline" className="h-11" disabled={page * (history.data.page_size || 5) >= history.data.count || history.isFetching} onClick={() => setPage(previous => previous + 1)}>Next</Button>
         </div>}
-      </section>
+      </details>
     </div>
   );
 }

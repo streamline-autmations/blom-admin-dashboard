@@ -1,10 +1,16 @@
 # In-store invoices
 
-The **Create In-Store Invoice** action is in **Sales & Inventory**. Search active products
-by name or SKU, adjust quantities, enter a customer name (phone/email optional), and
+The **Create In-Store Invoice** action is in **Sales & Inventory**. Search active products,
+bundles and courses by name only, adjust quantities, enter a customer name (phone/email optional), and
 generate the invoice. Saved invoices can be reopened, downloaded and printed from the
 same page. This feature does not create orders, deduct stock, send notifications or
-record payments. Prices are the product table's current `price` in Rand, without promotions.
+record payments or enrol students. Products/courses use current `price` in Rand; bundles
+use current `price_cents`. Course packages appear as separate named options at their stored
+package prices. No promotions, deposits or payment processing are added.
+
+Saved invoices sit in an expandable section, newest first, with five per page. Search
+invoice numbers or customer names, then open an invoice to download/print it again.
+This is intentionally a small invoice history, not an accounting/order-management screen.
 
 ## Deployment
 
@@ -13,11 +19,17 @@ The migration was applied with explicit approval to the commerce project
 `20261005182352_create_in_store_invoices`. The tables, constraints, RPC definition and
 service-role-only permissions were verified; no live test invoices were created.
 The Academy project was not changed. Admin deployment remains a separate step.
+The follow-up `20261005_extend_in_store_invoice_catalog.sql` was also applied with
+explicit approval, recorded as `20261005190450_extend_in_store_invoice_catalog`.
+It adds item type/package metadata, replaces the same atomic RPC and indexes invoice
+number/customer-name searches with the already-installed `pg_trgm` extension.
 
 1. Apply `db/migrations/20261005_create_in_store_invoices.sql` to the commerce Supabase
    database before deploying the admin changes (already applied to the project above;
    do not apply it twice). It is transactional and creates three
    new tables plus one RPC; it does not modify the order or product schema.
+   Apply the catalog-extension migration after it on new environments (both are already
+   applied to BLOM commerce). No catalog tables or online orders are modified.
 2. Deploy the admin frontend and Netlify functions together using the existing process.
    Existing `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `VITE_SUPABASE_URL`, and
    `VITE_SUPABASE_ANON_KEY` configuration is reused. Access is restricted to the existing
@@ -33,16 +45,22 @@ Banking details are saved with the invoice. Earlier invoices created with placeh
 retain their clearly marked placeholder footer when reopened; configuring bank details
 affects newly created invoices. PDFs say **PLACEHOLDERS** when applicable, and the UI
 warns staff to confirm banking details before sharing invoices for payment.
+Manual PDFs show only **Total**, not Subtotal or VAT. The payment reference is separated
+from bank details by a blank line and printed in bold black.
+The customer/business header uses the Store Terms address (34 Horingbek Street,
+Randfontein, 1759, South Africa) and existing invoice phone/email. Optional server variables
+`BLOM_BUSINESS_ADDRESS`, `BLOM_BUSINESS_PHONE` and `BLOM_BUSINESS_EMAIL` override those
+verified project defaults; no configuration is needed if they are still current.
 
 ## Storage, numbering and PDFs
 
 `in_store_invoices` stores the customer, timestamps, totals, bank snapshot and invoice
-number. `in_store_invoice_items` stores product IDs plus immutable names, SKUs, quantities,
+number. `in_store_invoice_items` stores source catalog IDs/types/package indexes plus immutable names, SKUs, quantities,
 unit prices and line totals. Product IDs are references for identification, without a
 foreign key, so product deletion cannot erase invoice history. Both monetary columns and
 snapshots use Rand, matching existing order-item conventions.
 
-The service-role RPC reads and locks products, validates quantities and current prices,
+The service-role RPC reads and locks the existing products/bundles/courses, validates quantities and current prices,
 then writes the header and items in one transaction. If a price changed after selection,
 staff must remove and add that product again to review it. Browser totals are never trusted.
 
@@ -68,6 +86,8 @@ declared typecheck script. The optional isolated database suite is
 installation of `@electric-sql/pglite/dist/index.js`, then run it with `node --test`.
 It checks the actual migration, transaction rollback, retries, snapshots, counters and
 database permissions without accessing the live database.
+The isolated database suite loads PGlite's bundled `pg_trgm` extension and tests upgrading
+existing invoices, mixed catalogs, package pricing, invalid types and deleted-course snapshots.
 
 Supabase reports informational "RLS Enabled No Policy" notices for the three new tables.
 This is intentional: browser roles have no table or RPC permissions, and the existing
