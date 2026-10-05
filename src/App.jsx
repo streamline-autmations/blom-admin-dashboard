@@ -70,6 +70,7 @@ import MessageDetail from '@/pages/MessageDetail'
 import Finance from '@/pages/Finance'
 import Affiliates from '@/pages/Affiliates'
 import Orders from '@/pages/Orders'
+import InStoreInvoices from '@/pages/InStoreInvoices'
 import OrderDetail from '@/pages/OrderDetail'
 import CourseBookings from '@/pages/CourseBookings'
 import CourseBookingDetail from '@/pages/CourseBookingDetail'
@@ -154,6 +155,8 @@ const AuthenticatedApp = () => {
         {/* Dashboard */}
         <Route path="/" element={<MainPage />} />
         <Route path="/dashboard" element={<MainPage />} />
+        <Route path="/in-store-invoices" element={<InStoreInvoices />} />
+        <Route path="/in-store-invoices/:id" element={<InStoreInvoices />} />
 
         {/* Legacy redirects - MUST come before canonical routes */}
         <Route path="/productnew" element={<Navigate to="/products/new" replace />} />
