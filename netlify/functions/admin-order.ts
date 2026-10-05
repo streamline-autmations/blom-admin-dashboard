@@ -193,7 +193,7 @@ const baseHandler: Handler = async (e) => {
         name, product_name, quantity, 
         unit_price_cents, line_total_cents, 
         price, unit_price, line_total,
-        variant, sku, product_id, variant_index
+        variant, sku, product_id, variant_index, customization
       `)
       .eq("order_id", id)
       .order("name", { ascending: true });

@@ -608,6 +608,54 @@ export default function OrderDetail() {
       color: var(--text-muted);
     }
 
+    .item-request {
+      margin-top: 8px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 13px;
+      color: var(--text);
+    }
+
+    .item-request dt {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-muted);
+      margin-top: 6px;
+    }
+
+    .item-request dt:first-child {
+      margin-top: 0;
+    }
+
+    .item-request dd {
+      margin: 2px 0 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .item-request a {
+      color: var(--accent);
+      text-decoration: underline;
+    }
+
+    .item-request-images {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    .item-request-images img {
+      width: 72px;
+      height: 72px;
+      object-fit: cover;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+    }
+
     .item-qty {
       font-weight: 600;
     }
@@ -987,6 +1035,34 @@ export default function OrderDetail() {
                         <td className="item-name">
                           <div className="item-title">{item.name || item.product_name || 'Unknown Item'}</div>
                           {item.variant && <div className="item-variant">{item.variant}</div>}
+                          {item.customization && (
+                            <dl className="item-request">
+                              <dt>Shade request</dt>
+                              <dd>{item.customization.tiktok_handle || 'No TikTok handle'}</dd>
+                              {item.customization.vibe && (<><dt>Vibe</dt><dd>{item.customization.vibe}</dd></>)}
+                              {item.customization.base_colour && (<><dt>Base colour</dt><dd>{item.customization.base_colour}</dd></>)}
+                              {item.customization.add_ins && (<><dt>Add-ins</dt><dd>{item.customization.add_ins}</dd></>)}
+                              {item.customization.shade_name && (<><dt>Shade name idea</dt><dd>{item.customization.shade_name}</dd></>)}
+                              {Array.isArray(item.customization.inspiration_images) && item.customization.inspiration_images.length > 0 && (
+                                <>
+                                  <dt>Inspiration photos</dt>
+                                  <dd className="item-request-images">
+                                    {item.customization.inspiration_images.map((url, idx) => (
+                                      <a key={url} href={url} target="_blank" rel="noopener noreferrer" title="Open full size">
+                                        <img src={url} alt={`Inspiration ${idx + 1}`} />
+                                      </a>
+                                    ))}
+                                  </dd>
+                                </>
+                              )}
+                              {item.customization.inspiration_link && (
+                                <>
+                                  <dt>Inspiration link</dt>
+                                  <dd><a href={item.customization.inspiration_link} target="_blank" rel="noopener noreferrer">{item.customization.inspiration_link}</a></dd>
+                                </>
+                              )}
+                            </dl>
+                          )}
                         </td>
                         <td className="item-qty text-center">{quantity}</td>
                         <td className="item-price text-right">{formatMoney(unitPriceCents)}</td>
