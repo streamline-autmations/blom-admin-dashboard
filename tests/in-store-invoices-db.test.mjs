@@ -44,11 +44,16 @@ test('invoice migration: atomic snapshots, validation, retries, counters and acc
     // Apply the follow-up to an existing invoice, proving backward compatibility.
     await db.exec(await readFile(new URL('../db/migrations/20261005_extend_in_store_invoice_catalog.sql', import.meta.url), 'utf8'));
     assert.equal((await db.query('SELECT item_type FROM in_store_invoice_items WHERE invoice_id=$1', [first])).rows[0].item_type, 'product');
+    // Two-digit-year numbering applies to new invoices only; issued numbers never change.
+    await db.exec(await readFile(new URL('../db/migrations/20261006_short_year_invoice_numbers.sql', import.meta.url), 'utf8'));
+    const shortDate = date.slice(2);
+    assert.equal((await db.query('SELECT invoice_number FROM in_store_invoices WHERE id=$1', [first])).rows[0].invoice_number, `INV-${date}-001`);
 
     const concurrentIds = await Promise.all(Array.from({ length: 20 }, () => create()));
     assert.equal(new Set(concurrentIds).size, 20);
     const numbers = (await db.query('SELECT invoice_number FROM in_store_invoices')).rows.map(row => row.invoice_number);
     assert.equal(new Set(numbers).size, 21);
+    assert.ok(numbers.filter(number => number !== `INV-${date}-001`).every(number => new RegExp(`^INV-${shortDate}-0(0[2-9]|1[0-9]|2[01])$`).test(number)));
     assert.equal(await create(request), first);
     const retries = await Promise.all(Array.from({ length: 10 }, () => create(request)));
     assert.ok(retries.every(value => value === first));
@@ -75,7 +80,7 @@ test('invoice migration: atomic snapshots, validation, retries, counters and acc
     await db.query('UPDATE products SET name=$2 WHERE id=$1', [product, 'Changed name']);
     await db.exec('UPDATE in_store_invoice_sequences SET last_number=999');
     const thousand = await create(randomUUID(), currentItems);
-    assert.equal((await db.query('SELECT invoice_number FROM in_store_invoices WHERE id=$1', [thousand])).rows[0].invoice_number, `INV-${date}-1000`);
+    assert.equal((await db.query('SELECT invoice_number FROM in_store_invoices WHERE id=$1', [thousand])).rows[0].invoice_number, `INV-${shortDate}-1000`);
 
     // Deliberately share the UUID across catalogs: types must keep identities separate.
     const course = randomUUID();

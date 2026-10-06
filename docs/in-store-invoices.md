@@ -74,7 +74,9 @@ The service-role RPC reads and locks the existing products/bundles/courses, vali
 then writes the header and items in one transaction. If a price changed after selection,
 staff must remove and add that product again to review it. Browser totals are never trusted.
 
-The format is `INV-YYYYMMDD-###`, using `Africa/Johannesburg` dates. An atomic daily counter
+The format is `INV-YYMMDD-###` (e.g. `INV-261006-003`), using `Africa/Johannesburg` dates.
+Invoices issued before `20261006_short_year_invoice_numbers.sql` keep their original
+`INV-YYYYMMDD-###` numbers; the two formats cannot collide. An atomic daily counter
 UPSERT locks the day's counter row; unique constraints provide additional protection.
 Numbers start at `001` each day and grow beyond `999` without truncation. An idempotent
 submission UUID prevents duplicate invoices when an unchanged failed request is retried.
