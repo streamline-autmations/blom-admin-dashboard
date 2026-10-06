@@ -6,7 +6,8 @@
 
 /* The global mobile flex-wrap rule switches forms to column. Keep the search
    field's flex-basis on the horizontal axis so it cannot create a tall blank gap. */
-.in-store-invoices .invoice-history-search {
+.in-store-invoices .invoice-history-search,
+.in-store-invoices .invoice-history-row {
   flex-direction: row !important;
 }
 
@@ -18,6 +19,7 @@
   --invoice-active: 336 74% 93%;
   --invoice-added: 142 64% 30%;
   --invoice-added-bg: 142 60% 92%;
+  --invoice-danger: 0 72% 42%;
 }
 .dark .in-store-invoices {
   --invoice-field: 240 6% 20%;
@@ -25,6 +27,7 @@
   --invoice-active: 340 45% 24%;
   --invoice-added: 142 55% 72%;
   --invoice-added-bg: 142 45% 16%;
+  --invoice-danger: 0 85% 72%;
 }
 
 .in-store-invoices .invoice-search-input {
@@ -84,4 +87,14 @@
 @media (prefers-reduced-motion: reduce) {
   .in-store-invoices .invoice-result,
   .in-store-invoices .invoice-history-link { transition: none; }
+}
+
+.in-store-invoices .invoice-delete { color: hsl(var(--foreground) / 0.7); }
+.in-store-invoices .invoice-delete:hover {
+  color: hsl(var(--invoice-danger));
+  background: hsl(var(--invoice-danger) / 0.12);
+}
+.in-store-invoices .invoice-delete-confirm {
+  background: hsl(var(--invoice-danger) / 0.1);
+  border: 2px solid hsl(var(--invoice-danger) / 0.7);
 }

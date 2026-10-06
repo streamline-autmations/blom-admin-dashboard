@@ -45,7 +45,7 @@ function bankingDetails() {
 }
 
 export const handler: Handler = async event => {
-  if (!["GET", "POST"].includes(event.httpMethod)) return json(405, { error: "Method not allowed" });
+  if (!["GET", "POST", "DELETE"].includes(event.httpMethod)) return json(405, { error: "Method not allowed" });
   const auth = await requireAdminUser(event);
   if (auth.ok === false) return auth.response;
   const db = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, {
@@ -89,6 +89,15 @@ export const handler: Handler = async event => {
         }),
       ].sort((a, b) => a.name.localeCompare(b.name));
       return json(200, { data });
+    }
+
+    // Items are removed by the ON DELETE CASCADE foreign key in the same statement.
+    if (event.httpMethod === "DELETE") {
+      if (!uuid.test(query.id || "")) return json(400, { error: "Invalid invoice ID" });
+      const { data, error } = await db.from("in_store_invoices").delete().eq("id", query.id).select("id");
+      if (error) throw error;
+      if (!data?.length) return json(404, { error: "Invoice not found. It may already have been deleted." });
+      return json(200, { deleted: query.id });
     }
 
     let invoiceId = query.id;

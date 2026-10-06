@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, Download, FileText, Minus, Plus, Printer, Search, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -30,6 +30,7 @@ function searchCatalog(catalog, search) {
 
 export default function InStoreInvoices() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [customer, setCustomer] = useState({ customer_name: '', customer_phone: '', customer_email: '' });
   const [items, setItems] = useState([]);
@@ -43,6 +44,8 @@ export default function InStoreInvoices() {
   const [busy, setBusy] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
   const [error, setError] = useState('');
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
   const requestId = useRef(null);
   const submission = useRef(null);
   const submitting = useRef(false);
@@ -169,6 +172,20 @@ export default function InStoreInvoices() {
     catch (failure) { setError(failure.message); }
     finally { setPdfBusy(false); }
   };
+  const deleteInvoice = async record => {
+    setDeleting(true);
+    setError('');
+    try {
+      await invoiceRequest(`?id=${encodeURIComponent(record.id)}`, { method: 'DELETE' });
+      setConfirmDelete(null);
+      queryClient.removeQueries({ queryKey: ['inStoreInvoice', record.id] });
+      if (history.data?.data?.length === 1 && page > 1) setPage(previous => previous - 1);
+      await queryClient.invalidateQueries({ queryKey: ['inStoreInvoices'] });
+      if (id === record.id) navigate('/in-store-invoices');
+      else if (saved?.id === record.id) newInvoice();
+    } catch (failure) { setError(failure.message); }
+    finally { setDeleting(false); }
+  };
   const newInvoice = () => {
     setSaved(null); setItems([]); setSearch(''); setLastAdded(''); setError('');
     setCustomer({ customer_name: '', customer_phone: '', customer_email: '' });
@@ -291,12 +308,25 @@ export default function InStoreInvoices() {
         {history.isPending ? <p role="status" className="mt-4 text-sm">Loading invoices…</p>
           : history.isError ? <div role="alert" className="mt-4 text-sm">{history.error.message}<Button type="button" variant="ghost" onClick={() => history.refetch()}>Retry</Button></div>
           : !history.data?.data?.length ? <p role="status" className="mt-4 text-sm text-muted-foreground">{historyFilter ? 'No invoices match this search.' : 'Your saved invoices will appear here.'}</p>
-          : <ul className="mt-4 divide-y divide-border">{history.data.data.map(record => <li key={record.id}>
-            <Link to={`/in-store-invoices/${record.id}`} onMouseEnter={() => prefetchInvoice(record.id)} onFocus={() => prefetchInvoice(record.id)}
-              className="invoice-history-link flex flex-wrap items-center justify-between gap-3 rounded-md px-3 py-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-              <div className="min-w-0 flex-1 basis-48"><p className="break-words font-medium">{record.invoice_number}</p><p className="break-words text-sm">{record.customer_name}</p><p className="text-xs text-muted-foreground">{dateTime(record.created_at)}</p></div>
-              <span className="shrink-0 font-medium tabular-nums">{money(record.total)} <span className="ml-2 text-sm text-muted-foreground">View →</span></span>
-            </Link>
+          : <ul className="mt-4 divide-y divide-border">{history.data.data.map(record => <li key={record.id} className="py-1">
+            <div className="invoice-history-row flex items-stretch gap-1.5">
+              <Link to={`/in-store-invoices/${record.id}`} onMouseEnter={() => prefetchInvoice(record.id)} onFocus={() => prefetchInvoice(record.id)}
+                className="invoice-history-link flex min-w-0 flex-1 flex-wrap items-center justify-between gap-3 rounded-md px-3 py-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                <div className="min-w-0 flex-1 basis-48"><p className="break-words font-medium">{record.invoice_number}</p><p className="break-words text-sm">{record.customer_name}</p><p className="text-xs text-muted-foreground">{dateTime(record.created_at)}</p></div>
+                <span className="shrink-0 font-medium tabular-nums">{money(record.total)} <span className="ml-2 text-sm text-muted-foreground">View →</span></span>
+              </Link>
+              {confirmDelete !== record.id && <Button type="button" variant="ghost" className="invoice-delete h-auto min-h-11 w-11 shrink-0 self-center px-0"
+                aria-label={`Delete invoice ${record.invoice_number}`} title="Delete invoice" disabled={deleting}
+                onClick={() => setConfirmDelete(record.id)}><Trash2 aria-hidden="true" /></Button>}
+            </div>
+            {confirmDelete === record.id && <div role="alertdialog" aria-labelledby={`delete-${record.id}`} className="invoice-delete-confirm mb-2 mt-1 flex flex-wrap items-center justify-between gap-3 rounded-md p-3">
+              <p id={`delete-${record.id}`} className="text-base font-medium">Delete {record.invoice_number} for {record.customer_name}? This cannot be undone.</p>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="outline" className="h-11" disabled={deleting} onClick={() => setConfirmDelete(null)}>Keep invoice</Button>
+                <Button type="button" variant="destructive" className="h-11" disabled={deleting} onClick={() => deleteInvoice(record)}>
+                  <Trash2 aria-hidden="true" />{deleting ? 'Deleting…' : 'Yes, delete'}</Button>
+              </div>
+            </div>}
           </li>)}</ul>}
         {(history.data?.count || 0) > (history.data?.page_size || 5) && <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
           <Button type="button" variant="outline" className="h-11" disabled={page === 1 || history.isFetching} onClick={() => setPage(previous => previous - 1)}>Previous</Button>

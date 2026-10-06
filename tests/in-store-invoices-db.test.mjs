@@ -46,6 +46,7 @@ test('invoice migration: atomic snapshots, validation, retries, counters and acc
     assert.equal((await db.query('SELECT item_type FROM in_store_invoice_items WHERE invoice_id=$1', [first])).rows[0].item_type, 'product');
     // Two-digit-year numbering applies to new invoices only; issued numbers never change.
     await db.exec(await readFile(new URL('../db/migrations/20261006_short_year_invoice_numbers.sql', import.meta.url), 'utf8'));
+    await db.exec(await readFile(new URL('../db/migrations/20261006_delete_in_store_invoices.sql', import.meta.url), 'utf8'));
     const shortDate = date.slice(2);
     assert.equal((await db.query('SELECT invoice_number FROM in_store_invoices WHERE id=$1', [first])).rows[0].invoice_number, `INV-${date}-001`);
 
@@ -116,5 +117,13 @@ test('invoice migration: atomic snapshots, validation, retries, counters and acc
     await db.query('DELETE FROM products WHERE id=$1', [product]);
     assert.equal(Number((await db.query('SELECT count(*) AS n FROM in_store_invoice_items WHERE invoice_id=$1', [first])).rows[0].n), 1);
     assert.equal(await create(request), first);
+
+    // Deleting an invoice removes its items in the same statement; browser roles cannot delete.
+    await db.exec('SET ROLE authenticated');
+    await assert.rejects(db.query('DELETE FROM in_store_invoices WHERE id=$1', [mixed]), /permission denied/);
+    await db.exec('RESET ROLE');
+    await db.query('DELETE FROM in_store_invoices WHERE id=$1', [mixed]);
+    assert.equal(Number((await db.query('SELECT count(*) AS n FROM in_store_invoice_items WHERE invoice_id=$1', [mixed])).rows[0].n), 0);
+    assert.equal(Number((await db.query('SELECT count(*) AS n FROM in_store_invoice_items WHERE invoice_id=$1', [first])).rows[0].n), 1);
   } finally { await db.close(); }
 });

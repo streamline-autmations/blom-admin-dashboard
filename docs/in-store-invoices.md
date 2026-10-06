@@ -11,6 +11,10 @@ package prices. No promotions, deposits or payment processing are added.
 Saved invoices sit in an expandable section, newest first, with five per page. Search
 invoice numbers or customer names, then open an invoice to download/print it again.
 This is intentionally a small invoice history, not an accounting/order-management screen.
+Each saved invoice has a delete (trash) button with an inline "Yes, delete" confirmation.
+Deletion is permanent: `DELETE ?id=` removes the header and, through the
+`20261006_delete_in_store_invoices.sql` ON DELETE CASCADE foreign key, its item snapshots
+in the same statement. Deleted numbers are not reused.
 
 Speed: the page loads the whole active catalog once (`?action=catalog`, a few hundred
 rows, cached for five minutes) and filters it in the browser, so results appear as staff

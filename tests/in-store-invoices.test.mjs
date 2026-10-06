@@ -62,6 +62,7 @@ function mockDb({ role = 'staff', responses = {}, rpcResult = { data: id, error:
         range(...args) { call.range = args; return query; },
         in(...args) { call.filters.push(['in', ...args]); return query; },
         update(value) { call.update = value; return query; },
+        delete() { call.delete = true; return query; },
         maybeSingle: async () => result(),
         then(resolve, reject) { return Promise.resolve(result()).then(resolve, reject); },
       };
@@ -95,7 +96,7 @@ test('requires a session and an existing owner/staff role for invoice access', a
   assert.equal(calls.length, 0);
   mockDb({ role: 'customer' });
   assert.equal((await manual.handler(event())).statusCode, 403);
-  assert.equal((await manual.handler(event('DELETE'))).statusCode, 405);
+  assert.equal((await manual.handler(event('PUT'))).statusCode, 405);
 });
 
 test('searches catalog names only with literal filter input and excludes invalid prices', async () => {
@@ -152,6 +153,25 @@ test('catalog action pages past the 1,000-row response cap so no item is unreach
   const data = JSON.parse((await manual.handler(event('GET', { action: 'catalog' }))).body).data;
   assert.equal(data.length, 1003);
   assert.deepEqual(calls.filter(call => call.table === 'products').map(call => call.range), [[0, 999], [1000, 1999]]);
+});
+
+test('deletes one invoice by ID for owner/staff only; items go with it via cascade', async () => {
+  let calls = mockDb({ role: 'customer' });
+  assert.equal((await manual.handler(event('DELETE', { id }))).statusCode, 403);
+  assert.ok(!calls.some(call => call.delete));
+  calls = mockDb();
+  assert.equal((await manual.handler(event('DELETE', { id: 'not-a-uuid' }))).statusCode, 400);
+  assert.equal((await manual.handler(event('DELETE'))).statusCode, 400);
+  assert.ok(!calls.some(call => call.delete));
+  calls = mockDb({ responses: { in_store_invoices: { data: [{ id }], error: null } } });
+  const response = await manual.handler(event('DELETE', { id }));
+  assert.equal(response.statusCode, 200);
+  const call = calls.find(entry => entry.delete);
+  assert.equal(call.table, 'in_store_invoices');
+  assert.deepEqual(call.filters.find(filter => filter[0] === 'eq'), ['eq', 'id', id]);
+  assert.ok(!calls.some(entry => entry.table === 'in_store_invoice_items'));
+  mockDb({ responses: { in_store_invoices: { data: [], error: null } } });
+  assert.equal((await manual.handler(event('DELETE', { id }))).statusCode, 404);
 });
 
 test('invoice history uses bounded pages and safely searches number/customer only', async () => {
