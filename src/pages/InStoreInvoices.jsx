@@ -199,8 +199,8 @@ export default function InStoreInvoices() {
           <h1 className="text-2xl font-semibold">{invoice ? invoice.invoice_number : id ? 'In-Store Invoice' : 'Create In-Store Invoice'}</h1>
           <p className="mt-1 text-sm text-muted-foreground">{invoice ? `Created ${dateTime(invoice.created_at)}` : 'Add items and customer details, then generate your invoice.'}</p>
         </div>
-        {(saved || id) && (id ? <Button asChild variant="outline"><Link to="/in-store-invoices">Create In-Store Invoice</Link></Button>
-          : <Button type="button" variant="outline" onClick={newInvoice}><Plus aria-hidden="true" />Create another invoice</Button>)}
+        {(saved || id) && (id ? <Button asChild className="h-12 px-6 text-base font-semibold shadow-md"><Link to="/in-store-invoices"><Plus aria-hidden="true" />Create In-Store Invoice</Link></Button>
+          : <Button type="button" className="h-12 px-6 text-base font-semibold shadow-md" onClick={newInvoice}><Plus aria-hidden="true" />Create another invoice</Button>)}
       </header>
 
       {error && <div ref={errorRef} role="alert" tabIndex={-1} className="rounded-md border border-destructive p-4 text-sm">{error}</div>}
