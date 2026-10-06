@@ -12,6 +12,16 @@ Saved invoices sit in an expandable section, newest first, with five per page. S
 invoice numbers or customer names, then open an invoice to download/print it again.
 This is intentionally a small invoice history, not an accounting/order-management screen.
 
+Speed: the page loads the whole active catalog once (`?action=catalog`, a few hundred
+rows, cached for five minutes) and filters it in the browser, so results appear as staff
+type; every typed word must match and names starting with the search rank first. Prices
+are still re-validated by the server on save. History pages return full invoice rows (five
+at a time), so opening a saved invoice renders from the list with no extra request.
+
+Ease of use: the search box, the results list and the "On this invoice" list each use a
+distinct shade. The highlighted result is tinted with a berry edge (↑/↓ + Enter also
+add), and items already on the invoice show a green "On invoice (qty)" badge.
+
 ## Deployment
 
 The migration was applied with explicit approval to the commerce project

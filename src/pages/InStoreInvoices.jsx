@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Download, FileText, Minus, Plus, Printer, Search, Trash2 } from 'lucide-react';
+import { Check, Download, FileText, Minus, Plus, Printer, Search, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -12,6 +12,21 @@ import './InStoreInvoices.css';
 const money = value => moneyZAR(Math.round(Number(value) * 100));
 const itemKey = item => `${item.item_type || 'product'}:${item.product_id || item.id}:${item.course_package_index ?? ''}`;
 const itemLabel = type => ({ product: 'Product', bundle: 'Bundle', course: 'Course' })[type || 'product'];
+const normalise = value => value.toLocaleLowerCase('en-ZA').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+const maxResults = 40;
+
+// Every typed word must appear in the name; names starting with the search rank first.
+function searchCatalog(catalog, search) {
+  const words = normalise(search).split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+  const phrase = words.join(' ');
+  return catalog
+    .map(item => ({ item, name: normalise(item.name) }))
+    .filter(({ name }) => words.every(word => name.includes(word)))
+    .sort((a, b) => Number(!a.name.startsWith(phrase)) - Number(!b.name.startsWith(phrase)))
+    .slice(0, maxResults)
+    .map(({ item }) => item);
+}
 
 export default function InStoreInvoices() {
   const { id } = useParams();
@@ -19,7 +34,8 @@ export default function InStoreInvoices() {
   const [customer, setCustomer] = useState({ customer_name: '', customer_phone: '', customer_email: '' });
   const [items, setItems] = useState([]);
   const [search, setSearch] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [activeResult, setActiveResult] = useState(0);
+  const [lastAdded, setLastAdded] = useState('');
   const [saved, setSaved] = useState(null);
   const [page, setPage] = useState(1);
   const [historySearch, setHistorySearch] = useState('');
@@ -33,11 +49,8 @@ export default function InStoreInvoices() {
   const errorRef = useRef(null);
   const savedRef = useRef(null);
   const historyRef = useRef(null);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 250);
-    return () => window.clearTimeout(timer);
-  }, [search]);
+  const searchRef = useRef(null);
+  const resultsRef = useRef(null);
   useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
   useEffect(() => {
     if (saved) {
@@ -47,7 +60,7 @@ export default function InStoreInvoices() {
   }, [saved]);
   useEffect(() => {
     if (id) {
-      setSaved(null); setItems([]); setSearch(''); setDebouncedSearch(''); setError('');
+      setSaved(null); setItems([]); setSearch(''); setLastAdded(''); setError('');
       setCustomer({ customer_name: '', customer_phone: '', customer_email: '' });
       requestId.current = null; submission.current = null;
     }
@@ -56,22 +69,51 @@ export default function InStoreInvoices() {
   const history = useQuery({
     queryKey: ['inStoreInvoices', page, historyFilter],
     queryFn: ({ signal }) => invoiceRequest(`?page=${page}&q=${encodeURIComponent(historyFilter)}`, { signal }),
+    staleTime: 30_000,
+    placeholderData: previous => previous,
   });
-  const products = useQuery({
-    queryKey: ['invoiceProducts', debouncedSearch],
-    queryFn: ({ signal }) => invoiceRequest(`?action=products&q=${encodeURIComponent(debouncedSearch)}`, { signal }),
-    enabled: !!debouncedSearch && !saved && !id,
+  // The whole catalog is a few hundred rows: load it once and search it locally so
+  // results appear as she types. The server still re-checks prices on save.
+  const catalog = useQuery({
+    queryKey: ['invoiceCatalog'],
+    queryFn: ({ signal }) => invoiceRequest('?action=catalog', { signal }),
+    staleTime: 5 * 60_000,
+    enabled: !saved && !id,
   });
+  // Saved invoices never change, so the copy already in the history list is enough to open one.
+  const cachedInvoice = invoiceId => queryClient.getQueriesData({ queryKey: ['inStoreInvoices'] })
+    .flatMap(([, data]) => data?.data || []).find(record => record.id === invoiceId && record.in_store_invoice_items);
   const detail = useQuery({
-    queryKey: ['inStoreInvoice', id], queryFn: () => invoiceRequest(`?id=${encodeURIComponent(id)}`), enabled: !!id,
+    queryKey: ['inStoreInvoice', id],
+    queryFn: () => invoiceRequest(`?id=${encodeURIComponent(id)}`),
+    enabled: !!id,
+    staleTime: Infinity,
+    initialData: () => {
+      const record = id && cachedInvoice(id);
+      return record ? { invoice: record } : undefined;
+    },
   });
+  const prefetchInvoice = invoiceId => {
+    if (cachedInvoice(invoiceId)) return;
+    queryClient.prefetchQuery({ queryKey: ['inStoreInvoice', invoiceId],
+      queryFn: () => invoiceRequest(`?id=${encodeURIComponent(invoiceId)}`), staleTime: Infinity });
+  };
+  // A failed refetch keeps old data; never offer (or Enter-add) results that are not on screen.
+  const results = useMemo(() => catalog.isError ? [] : searchCatalog(catalog.data?.data || [], search), [catalog.data, catalog.isError, search]);
+  useEffect(() => { setActiveResult(0); }, [search]);
+  useEffect(() => {
+    resultsRef.current?.querySelector(`[data-result-index="${activeResult}"]`)?.scrollIntoView({ block: 'nearest' });
+  }, [activeResult]);
   const invoice = id ? detail.data?.invoice : saved;
   const readOnly = !!invoice || !!id;
   const lines = invoice?.in_store_invoice_items || items;
   const total = invoice ? Number(invoice.total) : items.reduce((sum, item) => sum + item.price_cents * item.quantity, 0) / 100;
   const currentCustomer = invoice || customer;
 
+  const quantities = new Map(items.map(item => [itemKey(item), item.quantity]));
   const addProduct = product => {
+    if (items.length >= 100 && !quantities.has(itemKey(product))) return;
+    setLastAdded(`Added ${product.name}`);
     setItems(previous => {
       const existing = previous.find(item => itemKey(item) === itemKey(product));
       if (existing) return previous.map(item => item === existing ? { ...item, quantity: Math.min(9999, item.quantity + 1) } : item);
@@ -80,6 +122,12 @@ export default function InStoreInvoices() {
         course_package_index: product.course_package_index ?? null,
         price_cents: Math.round(Number(product.price) * 100), quantity: 1 }];
     });
+  };
+  const onSearchKeyDown = event => {
+    if (event.key === 'ArrowDown' && results.length) { event.preventDefault(); setActiveResult(index => Math.min(results.length - 1, index + 1)); }
+    else if (event.key === 'ArrowUp' && results.length) { event.preventDefault(); setActiveResult(index => Math.max(0, index - 1)); }
+    else if (event.key === 'Enter') { event.preventDefault(); if (results[activeResult]) addProduct(results[activeResult]); }
+    else if (event.key === 'Escape' && search) { event.preventDefault(); setSearch(''); }
   };
   const changeQuantity = (key, quantity) => {
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > 9999) return;
@@ -106,7 +154,11 @@ export default function InStoreInvoices() {
       const result = await invoiceRequest('', { method: 'POST', body: JSON.stringify({ ...body, request_id: requestId.current }) });
       setSaved(result.invoice);
       queryClient.invalidateQueries({ queryKey: ['inStoreInvoices'] });
-    } catch (failure) { setError(failure.message); }
+    } catch (failure) {
+      setError(failure.message);
+      // A rejection is often a changed price: reload the catalog so re-adding uses the current one.
+      queryClient.invalidateQueries({ queryKey: ['invoiceCatalog'] });
+    }
     finally { submitting.current = false; setBusy(false); }
   };
 
@@ -118,7 +170,7 @@ export default function InStoreInvoices() {
     finally { setPdfBusy(false); }
   };
   const newInvoice = () => {
-    setSaved(null); setItems([]); setSearch(''); setDebouncedSearch(''); setError('');
+    setSaved(null); setItems([]); setSearch(''); setLastAdded(''); setError('');
     setCustomer({ customer_name: '', customer_phone: '', customer_email: '' });
     requestId.current = null; submission.current = null;
   };
@@ -143,25 +195,53 @@ export default function InStoreInvoices() {
         <section className="min-w-0 rounded-lg border border-border bg-card p-4 sm:p-6" aria-labelledby="invoice-products-heading">
           <h2 id="invoice-products-heading" className="text-lg font-semibold">{readOnly ? 'Invoice items' : 'Add items'}</h2>
           {!readOnly && <fieldset disabled={busy} className="mt-4">
-            <Label htmlFor="invoice-search">Search products, bundles and courses by name</Label>
+            <Label htmlFor="invoice-search" className="text-base">Search products, bundles and courses by name</Label>
             <div className="relative mt-2">
-              <Search aria-hidden="true" className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-              <Input id="invoice-search" type="search" value={search} maxLength={100} onChange={event => setSearch(event.target.value)} className="h-11 pl-9" placeholder="Start typing a name…" autoComplete="off" />
+              <Search aria-hidden="true" className="invoice-search-icon pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2" />
+              <Input id="invoice-search" ref={searchRef} type="search" value={search} maxLength={100}
+                onChange={event => setSearch(event.target.value)} onKeyDown={onSearchKeyDown}
+                className="invoice-search-input h-14 pl-12 text-lg" placeholder="Start typing a name…" autoComplete="off"
+                role="combobox" aria-expanded={!!search.trim()} aria-controls="invoice-search-results" aria-autocomplete="list"
+                aria-activedescendant={results.length ? `invoice-result-${activeResult}` : undefined} />
             </div>
-            {search.trim() && <div className="mt-3 max-h-64 overflow-y-auto rounded-md border border-border" aria-label="Product search results">
-              {(products.isFetching || search.trim() !== debouncedSearch) ? <p role="status" className="p-3 text-sm text-muted-foreground">Searching products…</p>
-                : products.isError ? <div role="alert" className="p-3 text-sm">{products.error.message}<Button type="button" variant="ghost" onClick={() => products.refetch()}>Retry</Button></div>
-                : products.data?.data?.length ? products.data.data.map(product => <div key={itemKey(product)} className="flex items-center justify-between gap-3 border-b border-border p-3 last:border-0">
-                  <div className="min-w-0"><p className="break-words text-sm font-medium">{product.name}</p><p className="text-xs text-muted-foreground">{itemLabel(product.item_type)} · {money(product.price)}</p></div>
-                  <Button type="button" variant="outline" disabled={items.length >= 100 && !items.some(item => itemKey(item) === itemKey(product))} onClick={() => addProduct(product)} aria-label={`Add ${product.name}`}><Plus aria-hidden="true" />Add</Button>
-                </div>) : <p role="status" className="p-3 text-sm text-muted-foreground">No items found. Try another name.</p>}
+            <p className="sr-only" role="status" aria-live="polite">{lastAdded}</p>
+            {search.trim() && <div ref={resultsRef} id="invoice-search-results" role="listbox" aria-label="Search results"
+              className="invoice-search-results mt-2 max-h-[22rem] overflow-y-auto rounded-md">
+              {catalog.isPending ? <p role="status" className="p-4 text-base">Loading products…</p>
+                : catalog.isError ? <div role="alert" className="p-4 text-base">{catalog.error.message}<Button type="button" variant="ghost" onClick={() => catalog.refetch()}>Retry</Button></div>
+                : results.length ? results.map((product, index) => {
+                  const added = quantities.get(itemKey(product));
+                  const full = items.length >= 100 && !added;
+                  return <button type="button" key={itemKey(product)} id={`invoice-result-${index}`} data-result-index={index}
+                    role="option" aria-selected={index === activeResult} disabled={full}
+                    data-active={index === activeResult || undefined} data-added={!!added || undefined}
+                    onMouseEnter={() => setActiveResult(index)}
+                    onClick={() => { addProduct(product); searchRef.current?.focus(); }}
+                    className="invoice-result flex w-full items-center justify-between gap-3 px-4 py-3 text-left disabled:opacity-50">
+                    <span className="min-w-0">
+                      <span className="block break-words text-base font-medium">{product.name}</span>
+                      <span className="invoice-result-meta block text-sm">{itemLabel(product.item_type)} · {money(product.price)}</span>
+                    </span>
+                    <span className="flex shrink-0 items-center gap-2">
+                      {added && <span className="invoice-added-badge inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-sm font-semibold">
+                        <Check aria-hidden="true" className="h-4 w-4" />On invoice{added > 1 ? ` (${added})` : ''}
+                      </span>}
+                      <span className="invoice-result-add inline-flex h-10 items-center gap-1 rounded-md px-3 text-sm font-semibold">
+                        <Plus aria-hidden="true" className="h-4 w-4" />{added ? 'Add 1 more' : 'Add'}
+                      </span>
+                    </span>
+                  </button>;
+                }) : <p role="status" className="p-4 text-base">No items found. Try another name.</p>}
             </div>}
+            {search.trim() && results.length > 1 && <p className="mt-2 hidden text-sm text-muted-foreground sm:block">Tip: use the ↑ ↓ keys and press Enter to add, or Esc to clear the search.</p>}
           </fieldset>}
 
-          <div className="mt-6 space-y-4">
-            {!lines.length && <p className="border-t border-border py-8 text-sm text-muted-foreground">Search by name above to add your first invoice item.</p>}
-            {lines.map(item => <div key={itemKey(item)} className="grid gap-3 border-t border-border pt-4 sm:grid-cols-[minmax(0,1fr)_auto]">
-              <div className="min-w-0"><p className="break-words font-medium">{item.product_name}</p><p className="mt-1 text-sm text-muted-foreground">{itemLabel(item.item_type)} · Unit price: {readOnly ? money(item.unit_price) : moneyZAR(item.price_cents)}</p></div>
+          <div className="invoice-lines mt-6 rounded-md p-3 sm:p-4">
+            <h3 className="px-1 text-base font-semibold">{readOnly ? 'Items' : 'On this invoice'}{lines.length ? ` (${lines.length})` : ''}</h3>
+            {!lines.length && <p className="px-1 py-6 text-base text-muted-foreground">Nothing added yet. Search by name above and tap an item to add it.</p>}
+            <div className="mt-3 space-y-2">
+            {lines.map(item => <div key={itemKey(item)} className="invoice-line grid gap-3 rounded-md p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+              <div className="min-w-0"><p className="break-words text-base font-medium">{item.product_name}</p><p className="mt-1 text-sm text-muted-foreground">{itemLabel(item.item_type)} · Unit price: {readOnly ? money(item.unit_price) : moneyZAR(item.price_cents)}</p></div>
               <div className="flex flex-wrap items-center justify-between gap-3 sm:justify-end">
                 {readOnly ? <span className="text-sm">Qty: {item.quantity}</span> : <div className="flex items-center gap-1">
                   <Button type="button" variant="outline" className="h-11 w-11 px-0" disabled={busy || item.quantity <= 1} aria-label={`Decrease ${item.product_name} quantity`} onClick={() => changeQuantity(itemKey(item), item.quantity - 1)}><Minus aria-hidden="true" /></Button>
@@ -172,6 +252,7 @@ export default function InStoreInvoices() {
                 {!readOnly && <Button type="button" variant="ghost" className="h-11 w-11 px-0" disabled={busy} aria-label={`Remove ${item.product_name}`} onClick={() => setItems(previous => previous.filter(line => itemKey(line) !== itemKey(item)))}><Trash2 aria-hidden="true" /></Button>}
               </div>
             </div>)}
+            </div>
           </div>
         </section>
 
@@ -211,7 +292,8 @@ export default function InStoreInvoices() {
           : history.isError ? <div role="alert" className="mt-4 text-sm">{history.error.message}<Button type="button" variant="ghost" onClick={() => history.refetch()}>Retry</Button></div>
           : !history.data?.data?.length ? <p role="status" className="mt-4 text-sm text-muted-foreground">{historyFilter ? 'No invoices match this search.' : 'Your saved invoices will appear here.'}</p>
           : <ul className="mt-4 divide-y divide-border">{history.data.data.map(record => <li key={record.id}>
-            <Link to={`/in-store-invoices/${record.id}`} className="flex flex-wrap items-center justify-between gap-3 rounded-md py-4 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            <Link to={`/in-store-invoices/${record.id}`} onMouseEnter={() => prefetchInvoice(record.id)} onFocus={() => prefetchInvoice(record.id)}
+              className="invoice-history-link flex flex-wrap items-center justify-between gap-3 rounded-md px-3 py-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
               <div className="min-w-0 flex-1 basis-48"><p className="break-words font-medium">{record.invoice_number}</p><p className="break-words text-sm">{record.customer_name}</p><p className="text-xs text-muted-foreground">{dateTime(record.created_at)}</p></div>
               <span className="shrink-0 font-medium tabular-nums">{money(record.total)} <span className="ml-2 text-sm text-muted-foreground">View →</span></span>
             </Link>

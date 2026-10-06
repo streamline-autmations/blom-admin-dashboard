@@ -51,7 +51,7 @@ function mockDb({ role = 'staff', responses = {}, rpcResult = { data: id, error:
     from(table) {
       const call = { table, filters: [] }; calls.push(call);
       const result = () => table === 'profiles' ? { data: { app_role: role }, error: null }
-        : responses[table] || { data: ['products', 'bundles', 'courses'].includes(table) ? [] : invoice, error: null };
+        : (typeof responses[table] === 'function' ? responses[table](call) : responses[table]) || { data: ['products', 'bundles', 'courses'].includes(table) ? [] : invoice, error: null };
       const query = {
         select(value) { call.select = value; return query; },
         eq(...args) { call.filters.push(['eq', ...args]); return query; },
@@ -128,6 +128,30 @@ test('includes existing bundles and courses with package prices and catalog type
     ['Acrylic training — Deluxe', 9900, 1], ['Acrylic training — Standard', 7600, 0],
   ]);
   assert.equal(data.find(item => item.name === 'Acrylic workshop').item_type, 'course');
+});
+
+test('catalog action loads every active item once for instant in-browser search', async () => {
+  const calls = mockDb({ responses: {
+    products: { data: [{ id: productId, name: 'Base gel', price: 180 }, { id, name: 'Unpriced', price: null }], error: null },
+    bundles: { data: [{ id: productId, name: 'Starter kit', price_cents: 54950 }], error: null },
+  } });
+  const response = await manual.handler(event('GET', { action: 'catalog' }));
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(JSON.parse(response.body).data.map(item => [item.name, item.price]), [['Base gel', 180], ['Starter kit', 549.5]]);
+  for (const table of ['products', 'bundles', 'courses']) {
+    const call = calls.find(entry => entry.table === table);
+    assert.deepEqual(call.range, [0, 999]);
+    assert.ok(!call.filters.some(filter => filter[0] === 'ilike'));
+    assert.ok(call.filters.some(filter => filter[0] === 'eq' && filter[1] === 'is_active'));
+  }
+});
+
+test('catalog action pages past the 1,000-row response cap so no item is unreachable', async () => {
+  const calls = mockDb({ responses: { products: call => ({ error: null, data: Array.from(
+    { length: call.range[0] === 0 ? 1000 : 3 }, (_, index) => ({ id: productId, name: `Item ${call.range[0] + index}`, price: 10 })) }) } });
+  const data = JSON.parse((await manual.handler(event('GET', { action: 'catalog' }))).body).data;
+  assert.equal(data.length, 1003);
+  assert.deepEqual(calls.filter(call => call.table === 'products').map(call => call.range), [[0, 999], [1000, 1999]]);
 });
 
 test('invoice history uses bounded pages and safely searches number/customer only', async () => {

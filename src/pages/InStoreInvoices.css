@@ -9,3 +9,79 @@
 .in-store-invoices .invoice-history-search {
   flex-direction: row !important;
 }
+
+/* High-contrast invoice builder: each zone gets its own shade so the search box,
+   the search results and the items already on the invoice never blend together. */
+.in-store-invoices {
+  --invoice-field: var(--muted);
+  --invoice-zone: var(--muted);
+  --invoice-active: 336 74% 93%;
+  --invoice-added: 142 64% 30%;
+  --invoice-added-bg: 142 60% 92%;
+}
+.dark .in-store-invoices {
+  --invoice-field: 240 6% 20%;
+  --invoice-zone: 240 6% 7%;
+  --invoice-active: 340 45% 24%;
+  --invoice-added: 142 55% 72%;
+  --invoice-added-bg: 142 45% 16%;
+}
+
+.in-store-invoices .invoice-search-input {
+  background: hsl(var(--invoice-field));
+  border: 2px solid hsl(var(--primary) / 0.55);
+  color: hsl(var(--foreground));
+}
+.in-store-invoices .invoice-search-input:focus-visible {
+  border-color: hsl(var(--primary));
+  box-shadow: 0 0 0 3px hsl(var(--primary) / 0.25);
+  outline: none;
+}
+.in-store-invoices .invoice-search-input::placeholder,
+.in-store-invoices .invoice-search-icon { color: hsl(var(--foreground) / 0.6); }
+
+.in-store-invoices .invoice-search-results {
+  border: 2px solid hsl(var(--primary) / 0.45);
+  background: hsl(var(--card));
+}
+.in-store-invoices .invoice-result {
+  border-bottom: 1px solid hsl(var(--border));
+  box-shadow: inset 0 0 0 transparent;
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+.in-store-invoices .invoice-result:last-child { border-bottom: 0; }
+.in-store-invoices .invoice-result-meta { color: hsl(var(--foreground) / 0.72); }
+.in-store-invoices .invoice-result-add {
+  border: 2px solid hsl(var(--primary));
+  color: hsl(var(--foreground));
+}
+.in-store-invoices .invoice-result[data-active]:not(:disabled) {
+  background: hsl(var(--invoice-active));
+  box-shadow: inset 5px 0 0 hsl(var(--primary));
+}
+.in-store-invoices .invoice-result[data-active]:not(:disabled) .invoice-result-add {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+.in-store-invoices .invoice-added-badge {
+  background: hsl(var(--invoice-added-bg));
+  color: hsl(var(--invoice-added));
+}
+
+.in-store-invoices .invoice-lines { background: hsl(var(--invoice-zone)); }
+.in-store-invoices .invoice-line {
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  border-left: 4px solid hsl(var(--invoice-added));
+}
+
+.in-store-invoices .invoice-history-link { transition: background-color 120ms ease; }
+.in-store-invoices .invoice-history-link:hover {
+  background: hsl(var(--invoice-active));
+  box-shadow: inset 5px 0 0 hsl(var(--primary));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .in-store-invoices .invoice-result,
+  .in-store-invoices .invoice-history-link { transition: none; }
+}

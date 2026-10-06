@@ -12,6 +12,18 @@ const itemTypes = new Set(["product", "bundle", "course"]);
 const validPrice = (price: unknown) => (typeof price === 'number' || (typeof price === 'string' && !!price.trim()))
   && Number.isFinite(Number(price)) && Number(price) >= 0;
 const searchLiteral = (value: string) => value.replace(/\\/g, "\\\\").replace(/[%_]/g, "\\$&");
+const catalogPage = 1000;
+
+// PostgREST caps each response, so page through until a short page proves we have every row.
+async function allRows(query: () => { range: (from: number, to: number) => PromiseLike<{ data: any[] | null; error: any }> }) {
+  const rows: any[] = [];
+  for (let from = 0; ; from += catalogPage) {
+    const { data, error } = await query().range(from, from + catalogPage - 1);
+    if (error) return { data: null, error };
+    rows.push(...(data || []));
+    if ((data || []).length < catalogPage) return { data: rows, error: null };
+  }
+}
 
 function bankingDetails() {
   const details = {
@@ -43,17 +55,26 @@ export const handler: Handler = async event => {
   try {
     const query = event.queryStringParameters || {};
     // Existing catalogs only. Bundles store cents; products/courses store Rand.
-    if (event.httpMethod === "GET" && query.action === "products") {
+    // "catalog" returns every sellable item once so the browser can filter instantly;
+    // "products" keeps the bounded server-side name search.
+    if (event.httpMethod === "GET" && (query.action === "products" || query.action === "catalog")) {
+      const full = query.action === "catalog";
       const search = (query.q || "").trim().slice(0, 100);
-      if (!search) return json(200, { data: [] });
+      if (!full && !search) return json(200, { data: [] });
       const pattern = `%${searchLiteral(search)}%`;
-      const results = await Promise.all([
-        db.from("products").select("id,name,price").eq("is_active", true)
-          .or("status.is.null,status.not.in.(archived,deleted)").ilike("name", pattern).order("name").limit(20),
-        db.from("bundles").select("id,name,price_cents").eq("is_active", true)
-          .or("status.is.null,status.not.in.(archived,deleted)").ilike("name", pattern).order("name").limit(20),
-        db.from("courses").select("id,title,price,packages").eq("is_active", true)
-          .ilike("title", pattern).order("title").limit(20),
+      const products = () => db.from("products").select("id,name,price").eq("is_active", true)
+        .or("status.is.null,status.not.in.(archived,deleted)");
+      const bundles = () => db.from("bundles").select("id,name,price_cents").eq("is_active", true)
+        .or("status.is.null,status.not.in.(archived,deleted)");
+      const courses = () => db.from("courses").select("id,title,price,packages").eq("is_active", true);
+      const results = await Promise.all(full ? [
+        allRows(() => products().order("name").order("id")),
+        allRows(() => bundles().order("name").order("id")),
+        allRows(() => courses().order("title").order("id")),
+      ] : [
+        products().ilike("name", pattern).order("name").limit(20),
+        bundles().ilike("name", pattern).order("name").limit(20),
+        courses().ilike("title", pattern).order("title").limit(20),
       ]);
       for (const result of results) if (result.error) throw result.error;
       const data = [
@@ -131,7 +152,8 @@ export const handler: Handler = async event => {
 
     const page = Math.max(1, Math.min(100000, Number.parseInt(query.page || "1", 10) || 1));
     let historyQuery = db.from("in_store_invoices")
-      .select("id,invoice_number,created_at,customer_name,total", { count: "exact" })
+      // Full rows (5 per page) so opening a saved invoice can render from this list instantly.
+      .select(selectInvoice, { count: "exact" })
       .order("created_at", { ascending: false }).order("id");
     const historySearch = (query.q || "").trim().slice(0, 100);
     if (historySearch) {
@@ -140,6 +162,7 @@ export const handler: Handler = async event => {
     }
     const { data, error, count } = await historyQuery.range((page - 1) * pageSize, page * pageSize - 1);
     if (error) throw error;
+    for (const record of data || []) record.in_store_invoice_items?.sort((a, b) => a.position - b.position);
     return json(200, { data, count, page_size: pageSize, banking_configured: bankingDetails().is_placeholder !== "true" });
   } catch (error) {
     console.error("In-store invoice request failed:", error instanceof Error ? error.message : error);
