@@ -25,23 +25,28 @@ async function allRows(query: () => { range: (from: number, to: number) => Promi
   }
 }
 
-function bankingDetails() {
+// BLOM's own account, printed on every manual invoice. A complete set of BLOM_BANK_*
+// variables overrides it (account type is optional); a partial set is ignored so details
+// from two different accounts can never be mixed on one invoice.
+const blomBank = {
+  bank_name: "FNB",
+  account_holder: "Blom Cosmetics (Pty) Ltd",
+  account_number: "631 5993 7417",
+  account_type: "",
+  branch_code: "250655",
+};
+
+function bankingDetails(): Record<string, string> {
   const details = {
     bank_name: process.env.BLOM_BANK_NAME?.trim(),
     account_holder: process.env.BLOM_BANK_ACCOUNT_HOLDER?.trim(),
     account_number: process.env.BLOM_BANK_ACCOUNT_NUMBER?.trim(),
-    account_type: process.env.BLOM_BANK_ACCOUNT_TYPE?.trim(),
     branch_code: process.env.BLOM_BANK_BRANCH_CODE?.trim(),
   };
   if (Object.values(details).every(value => value && value.length <= 160)) {
-    return details as Record<string, string>;
+    return { ...details, account_type: (process.env.BLOM_BANK_ACCOUNT_TYPE || "").trim().slice(0, 160) } as Record<string, string>;
   }
-  // Temporary placeholders explicitly requested; never present guessed account numbers.
-  return {
-    bank_name: "To be confirmed", account_holder: "To be confirmed",
-    account_number: "To be confirmed", account_type: "To be confirmed",
-    branch_code: "To be confirmed", is_placeholder: "true",
-  };
+  return { ...blomBank };
 }
 
 export const handler: Handler = async event => {

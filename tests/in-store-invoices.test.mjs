@@ -199,7 +199,7 @@ test('validates requests, strips browser totals and uses the atomic snapshot RPC
   assert.equal(rpc.args.total, undefined);
   assert.equal(rpc.args.invoice_number, undefined);
   assert.deepEqual(rpc.args.p_items, submission.items.map(item => ({ ...item, item_type: 'product', course_package_index: null })));
-  assert.equal(rpc.args.p_banking_details.is_placeholder, 'true');
+  assert.deepEqual(rpc.args.p_banking_details, { bank_name: 'FNB', account_holder: 'Blom Cosmetics (Pty) Ltd', account_number: '631 5993 7417', account_type: '', branch_code: '250655' });
   assert.equal(JSON.parse(response.body).invoice.total, 250);
   assert.ok(!calls.some(call => ['orders', 'stock_movements', 'payments'].includes(call.table)));
 });
@@ -222,19 +222,30 @@ test('reports stale prices and invalid invoice IDs without saving or rendering',
   assert.equal((await manual.handler(event('GET', { id }))).statusCode, 404);
 });
 
-test('bank configuration must be complete before replacing the explicit placeholders', async () => {
+test('uses BLOM FNB details unless a complete BLOM_BANK_* override is configured', async () => {
   try {
     process.env.BLOM_BANK_NAME = 'Synthetic test bank';
     let calls = mockDb();
     await manual.handler(event('POST', {}, submission));
-    assert.equal(calls.find(call => call.rpc).args.p_banking_details.is_placeholder, 'true');
+    assert.equal(calls.find(call => call.rpc).args.p_banking_details.bank_name, 'FNB');
     bankVariables.forEach(key => { process.env[key] = 'Synthetic test value'; });
     calls = mockDb();
     await manual.handler(event('POST', {}, submission));
     const snapshot = calls.find(call => call.rpc).args.p_banking_details;
     assert.equal(snapshot.is_placeholder, undefined);
     assert.equal(snapshot.account_number, 'Synthetic test value');
+    assert.equal(snapshot.account_type, 'Synthetic test value');
   } finally { bankVariables.forEach(key => { delete process.env[key]; }); }
+});
+
+test('manual PDF prints BLOM FNB details, omitting the blank account type', async () => {
+  const fnb = { bank_name: 'FNB', account_holder: 'Blom Cosmetics (Pty) Ltd', account_number: '631 5993 7417', account_type: '', branch_code: '250655' };
+  const bytes = await renderer.generateInvoiceDocument({ ...invoice, banking_details: fnb },
+    invoice.in_store_invoice_items.map(item => ({ ...item, name: item.product_name })), invoice.invoice_number, null, fnb);
+  const { text } = await pdfText(bytes);
+  for (const value of ['BLOM Cosmetics banking details', 'Account name: Blom Cosmetics (Pty) Ltd', 'Bank: FNB', 'Account number: 631 5993 7417', 'Branch code: 250655']) assert.ok(text.includes(value), value);
+  assert.ok(!text.includes('Account type'));
+  assert.ok(!text.includes('PLACEHOLDERS'));
 });
 
 test('manual PDF uses saved names/prices, branding, placeholder banking and actual payment reference', async () => {

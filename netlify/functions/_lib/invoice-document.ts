@@ -373,13 +373,15 @@ export async function generateInvoiceDocument(order: any, normalizedItems: any[]
     drawText("Questions? Contact us: shopblomcosmetics@gmail.com | +27 79 548 3317", left, y, 9, false, rgb(0.4, 0.45, 0.52))
 
     if (bankingDetails) {
-      const bankLines = [
-        `Bank: ${bankingDetails.bank_name}`,
-        `Account holder: ${bankingDetails.account_holder}`,
-        `Account number: ${bankingDetails.account_number}`,
-        `Account type: ${bankingDetails.account_type}`,
-        `Branch code: ${bankingDetails.branch_code}`,
-      ].flatMap(line => wrapText(line, right - left, 10))
+      // Older invoices saved "Account holder"; blank fields (e.g. no account type) are omitted.
+      const bankLines = ([
+        ["Account name", bankingDetails.account_holder],
+        ["Bank", bankingDetails.bank_name],
+        ["Account number", bankingDetails.account_number],
+        ["Account type", bankingDetails.account_type],
+        ["Branch code", bankingDetails.branch_code],
+      ] as [string, string | undefined][]).filter(([, value]) => value?.trim())
+        .flatMap(([label, value]) => wrapText(`${label}: ${value}`, right - left, 10))
       const paymentLines = wrapText(`Please use ${m_payment_id} as your payment reference when making payment.`, right - left - 20, 10)
       y += 30
       y = checkPageBreak(y, 43 + (bankLines.length + paymentLines.length) * 15)

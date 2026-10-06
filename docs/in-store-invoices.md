@@ -48,17 +48,15 @@ number/customer-name searches with the already-installed `pg_trgm` extension.
    Existing `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `VITE_SUPABASE_URL`, and
    `VITE_SUPABASE_ANON_KEY` configuration is reused. Access is restricted to the existing
    `profiles.app_role` values `owner` and `staff`.
-3. Temporary banking placeholders were explicitly requested. To replace them, configure
-   **all five** server-side Netlify environment variables with confirmed BLOM details:
-   `BLOM_BANK_NAME`, `BLOM_BANK_ACCOUNT_HOLDER`, `BLOM_BANK_ACCOUNT_NUMBER`,
-   `BLOM_BANK_ACCOUNT_TYPE`, and `BLOM_BANK_BRANCH_CODE`. Partial configuration uses
-   placeholders for every field so incomplete details cannot appear as usable banking
-   instructions. No real account information was found in the repository.
+3. Invoices print BLOM's FNB account (Blom Cosmetics (Pty) Ltd, account 631 5993 7417,
+   branch code 250655), set in `admin-in-store-invoices.ts`. No account type was supplied,
+   so that line is omitted. To override, set **all** of `BLOM_BANK_NAME`,
+   `BLOM_BANK_ACCOUNT_HOLDER`, `BLOM_BANK_ACCOUNT_NUMBER` and `BLOM_BANK_BRANCH_CODE`
+   (`BLOM_BANK_ACCOUNT_TYPE` optional) in Netlify; a partial set is ignored so two
+   accounts can never be mixed.
 
-Banking details are saved with the invoice. Earlier invoices created with placeholders
-retain their clearly marked placeholder footer when reopened; configuring bank details
-affects newly created invoices. PDFs say **PLACEHOLDERS** when applicable, and the UI
-warns staff to confirm banking details before sharing invoices for payment.
+Banking details are saved with the invoice, so changing them affects only new invoices.
+Invoices created before the real details were added keep their PLACEHOLDERS footer.
 Manual PDFs show only **Total**, not Subtotal or VAT. The payment reference is separated
 from bank details by a blank line and printed in bold black.
 The customer/business header uses the Store Terms address (34 Horingbek Street,
