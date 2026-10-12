@@ -156,7 +156,7 @@ export async function generateInvoiceDocument(order: any, normalizedItems: any[]
     const fulfillment = order.fulfillment_method || order.delivery_method || order.fulfillment_type || order.shipping_method || "-"
     if (isManual) {
       const detailY = y;
-      for (const detail of [buyerName, buyerEmail === "-" ? "" : buyerEmail, buyerPhone].filter(Boolean)) {
+      for (const detail of [buyerName, buyerEmail === "-" ? "" : buyerEmail, buyerPhone, order.price_tier_name ? `${order.price_tier_name} price list` : ""].filter(Boolean)) {
         for (const line of wrapText(detail, right - left - 220, 10)) {
           drawText(line, left, y, 10)
           y += 14

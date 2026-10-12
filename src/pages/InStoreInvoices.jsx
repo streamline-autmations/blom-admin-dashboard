@@ -11,7 +11,7 @@ import './InStoreInvoices.css';
 
 const money = value => moneyZAR(Math.round(Number(value) * 100));
 const itemKey = item => `${item.item_type || 'product'}:${item.product_id || item.id}:${item.course_package_index ?? ''}`;
-const itemLabel = type => ({ product: 'Product', bundle: 'Bundle', course: 'Course' })[type || 'product'];
+const itemLabel = type => ({ product: 'Product', bundle: 'Bundle', course: 'Course', extra: 'Product' })[type || 'product'];
 const normalise = value => value.toLocaleLowerCase('en-ZA').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 const maxResults = 40;
 
@@ -34,6 +34,7 @@ export default function InStoreInvoices() {
   const queryClient = useQueryClient();
   const [customer, setCustomer] = useState({ customer_name: '', customer_phone: '', customer_email: '' });
   const [items, setItems] = useState([]);
+  const [tier, setTier] = useState('');
   const [search, setSearch] = useState('');
   const [activeResult, setActiveResult] = useState(0);
   const [lastAdded, setLastAdded] = useState('');
@@ -46,6 +47,8 @@ export default function InStoreInvoices() {
   const [error, setError] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const pricedFor = useRef('');
+  const [knownTiers, setKnownTiers] = useState([]);
   const requestId = useRef(null);
   const submission = useRef(null);
   const submitting = useRef(false);
@@ -63,7 +66,7 @@ export default function InStoreInvoices() {
   }, [saved]);
   useEffect(() => {
     if (id) {
-      setSaved(null); setItems([]); setSearch(''); setLastAdded(''); setError('');
+      setSaved(null); setItems([]); setTier(''); pricedFor.current = ''; setSearch(''); setLastAdded(''); setError('');
       setCustomer({ customer_name: '', customer_phone: '', customer_email: '' });
       requestId.current = null; submission.current = null;
     }
@@ -78,11 +81,27 @@ export default function InStoreInvoices() {
   // The whole catalog is a few hundred rows: load it once and search it locally so
   // results appear as she types. The server still re-checks prices on save.
   const catalog = useQuery({
-    queryKey: ['invoiceCatalog'],
-    queryFn: ({ signal }) => invoiceRequest('?action=catalog', { signal }),
+    queryKey: ['invoiceCatalog', tier],
+    queryFn: ({ signal }) => invoiceRequest(`?action=catalog${tier ? `&tier=${encodeURIComponent(tier)}` : ''}`, { signal }),
     staleTime: 5 * 60_000,
     enabled: !saved && !id,
+    placeholderData: previous => previous,
   });
+  // Remember the price lists so the picker (and its Retail fallback) survives a failed load.
+  useEffect(() => { if (catalog.data?.tiers) setKnownTiers(catalog.data.tiers); }, [catalog.data]);
+  const tiers = knownTiers;
+  const tierName = tiers.find(row => row.slug === tier)?.name;
+  // Switching price list reprices what is already on the invoice once that list has loaded.
+  // Only a list change reprices: a later catalog refresh must not alter lines, or a retry
+  // of a save whose response was lost would get a new request ID and duplicate the invoice.
+  useEffect(() => {
+    if (catalog.isPlaceholderData || !catalog.data?.data || pricedFor.current === tier) return;
+    pricedFor.current = tier;
+    const current = new Map(catalog.data.data.map(entry => [itemKey({ ...entry, product_id: entry.id }), Math.round(Number(entry.price) * 100)]));
+    setItems(previous => previous.some(item => current.has(itemKey(item)) && current.get(itemKey(item)) !== item.price_cents)
+      ? previous.map(item => current.has(itemKey(item)) ? { ...item, price_cents: current.get(itemKey(item)) } : item)
+      : previous);
+  }, [catalog.data, catalog.isPlaceholderData, tier]);
   // Saved invoices never change, so the copy already in the history list is enough to open one.
   const cachedInvoice = invoiceId => queryClient.getQueriesData({ queryKey: ['inStoreInvoices'] })
     .flatMap(([, data]) => data?.data || []).find(record => record.id === invoiceId && record.in_store_invoice_items);
@@ -141,7 +160,7 @@ export default function InStoreInvoices() {
     event.preventDefault();
     if (submitting.current) return;
     if (!items.length) { setError('Search for an item and add it to the invoice.'); return; }
-    const body = { ...customer, items: items.map(item => ({ product_id: item.product_id,
+    const body = { ...customer, price_tier: tier || null, items: items.map(item => ({ product_id: item.product_id,
       item_type: item.item_type, course_package_index: item.course_package_index,
       quantity: item.quantity, expected_price_cents: item.price_cents })) };
     const serialized = JSON.stringify(body);
@@ -187,7 +206,7 @@ export default function InStoreInvoices() {
     finally { setDeleting(false); }
   };
   const newInvoice = () => {
-    setSaved(null); setItems([]); setSearch(''); setLastAdded(''); setError('');
+    setSaved(null); setItems([]); setTier(''); pricedFor.current = ''; setSearch(''); setLastAdded(''); setError('');
     setCustomer({ customer_name: '', customer_phone: '', customer_email: '' });
     requestId.current = null; submission.current = null;
   };
@@ -237,7 +256,9 @@ export default function InStoreInvoices() {
                     className="invoice-result flex w-full items-center justify-between gap-3 px-4 py-3 text-left disabled:opacity-50">
                     <span className="min-w-0">
                       <span className="block break-words text-base font-medium">{product.name}</span>
-                      <span className="invoice-result-meta block text-sm">{itemLabel(product.item_type)} · {money(product.price)}</span>
+                      <span className="invoice-result-meta block text-sm">{itemLabel(product.item_type)} · {money(product.price)}
+                        {product.tier_priced && <> · <s>{money(product.retail_price)}</s> {tierName}</>}
+                        {product.tier_priced === false && ' · retail price (not on this list)'}</span>
                     </span>
                     <span className="flex shrink-0 items-center gap-2">
                       {added && <span className="invoice-added-badge inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-sm font-semibold">
@@ -275,6 +296,16 @@ export default function InStoreInvoices() {
 
         <aside className="space-y-5 rounded-lg border border-border bg-card p-4 sm:p-6">
           <h2 className="text-lg font-semibold">Customer</h2>
+          {(readOnly ? !!invoice?.price_tier_name : tiers.length > 0) && <div role="group" aria-labelledby="price-list-label">
+            <p id="price-list-label" className="text-sm font-medium">Price list</p>
+            {readOnly ? <p className="mt-2 text-base">{invoice.price_tier_name}</p> : <div className="mt-2 flex flex-wrap gap-2">
+              {[{ slug: '', name: 'Retail' }, ...tiers].map(row => <Button key={row.slug || 'retail'} type="button" disabled={busy}
+                variant={tier === row.slug ? 'default' : 'outline'} aria-pressed={tier === row.slug} className="h-11"
+                onClick={() => setTier(row.slug)}>{row.name}</Button>)}
+            </div>}
+            {!readOnly && catalog.isError && <p role="alert" className="mt-2 text-sm">Could not load this price list. {catalog.error.message}
+              <Button type="button" variant="ghost" onClick={() => catalog.refetch()}>Retry</Button></p>}
+          </div>}
           <fieldset disabled={busy || readOnly} className="space-y-4">
             <div><Label htmlFor="invoice-name">Customer name</Label><Input id="invoice-name" className="mt-2 h-11" autoComplete="name" maxLength={160} required value={currentCustomer.customer_name || ''} onChange={event => setCustomer(previous => ({ ...previous, customer_name: event.target.value }))} /></div>
             <div><Label htmlFor="invoice-phone">Phone number <span className="font-normal text-muted-foreground">(optional)</span></Label><Input id="invoice-phone" className="mt-2 h-11" type="tel" autoComplete="tel" maxLength={40} value={currentCustomer.customer_phone || ''} onChange={event => setCustomer(previous => ({ ...previous, customer_phone: event.target.value }))} /></div>
@@ -288,7 +319,7 @@ export default function InStoreInvoices() {
             <Button type="button" disabled={pdfBusy} className="w-full" onClick={() => pdfAction(false)}><Download aria-hidden="true" />{pdfBusy ? 'Preparing PDF…' : 'Download PDF'}</Button>
             <Button type="button" variant="outline" disabled={pdfBusy} className="w-full" onClick={() => pdfAction(true)}><Printer aria-hidden="true" />Print Invoice</Button>
             <p className="break-words text-sm text-muted-foreground">Please use {invoice.invoice_number} as your payment reference when making payment.</p>
-          </div> : <Button type="submit" disabled={busy || !items.length} className="w-full"><FileText aria-hidden="true" />{busy ? 'Saving invoice…' : 'Generate Invoice'}</Button>}
+          </div> : <Button type="submit" disabled={busy || !items.length || catalog.isPlaceholderData || catalog.isError} className="w-full"><FileText aria-hidden="true" />{busy ? 'Saving invoice…' : 'Generate Invoice'}</Button>}
         </aside>
       </form>}
 

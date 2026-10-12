@@ -8,11 +8,12 @@ const headers = { "Content-Type": "application/json", "Cache-Control": "no-store
 const json = (statusCode: number, data: unknown) => ({ statusCode, headers, body: JSON.stringify(data) });
 const selectInvoice = "*,in_store_invoice_items(*)";
 const pageSize = 5;
-const itemTypes = new Set(["product", "bundle", "course"]);
+const itemTypes = new Set(["product", "bundle", "course", "extra"]);
 const validPrice = (price: unknown) => (typeof price === 'number' || (typeof price === 'string' && !!price.trim()))
   && Number.isFinite(Number(price)) && Number(price) >= 0;
 const searchLiteral = (value: string) => value.replace(/\\/g, "\\\\").replace(/[%_]/g, "\\$&");
 const catalogPage = 1000;
+const tierSlug = /^[a-z0-9_]{2,40}$/;
 
 // PostgREST caps each response, so page through until a short page proves we have every row.
 async function allRows(query: () => { range: (from: number, to: number) => PromiseLike<{ data: any[] | null; error: any }> }) {
@@ -64,6 +65,8 @@ export const handler: Handler = async event => {
     // "products" keeps the bounded server-side name search.
     if (event.httpMethod === "GET" && (query.action === "products" || query.action === "catalog")) {
       const full = query.action === "catalog";
+      const tier = (query.tier || "").trim();
+      if (tier && !tierSlug.test(tier)) return json(400, { error: "Invalid price list" });
       const search = (query.q || "").trim().slice(0, 100);
       if (!full && !search) return json(200, { data: [] });
       const pattern = `%${searchLiteral(search)}%`;
@@ -71,20 +74,45 @@ export const handler: Handler = async event => {
         .or("status.is.null,status.not.in.(archived,deleted)");
       const bundles = () => db.from("bundles").select("id,name,price_cents").eq("is_active", true)
         .or("status.is.null,status.not.in.(archived,deleted)");
+      // Sheet-only reseller items that are not sold on the website.
+      const extras = () => db.from("invoice_only_items").select("id,name,retail_price_cents").eq("is_active", true);
       const courses = () => db.from("courses").select("id,title,price,packages").eq("is_active", true);
       const results = await Promise.all(full ? [
         allRows(() => products().order("name").order("id")),
         allRows(() => bundles().order("name").order("id")),
         allRows(() => courses().order("title").order("id")),
+        allRows(() => extras().order("name").order("id")),
       ] : [
         products().ilike("name", pattern).order("name").limit(20),
         bundles().ilike("name", pattern).order("name").limit(20),
         courses().ilike("title", pattern).order("title").limit(20),
+        extras().ilike("name", pattern).order("name").limit(20),
       ]);
       for (const result of results) if (result.error) throw result.error;
+      // Reseller price lists: active tiers for the picker, plus the chosen tier's explicit prices.
+      const tiersResult = await db.from("price_tiers").select("slug,name").eq("is_active", true).order("sort_order");
+      if (tiersResult.error) throw tiersResult.error;
+      const tiers = tiersResult.data || [];
+      const tierPrices = new Map<string, number>();
+      if (tier) {
+        if (!tiers.some(row => row.slug === tier)) return json(400, { error: "That price list is not available" });
+        const priced = await allRows(() => db.from("tier_prices").select("item_type,item_id,price_cents")
+          .eq("tier_slug", tier).order("item_type").order("item_id"));
+        if (priced.error) throw priced.error;
+        for (const row of priced.data || []) tierPrices.set(`${row.item_type}:${row.item_id}`, Number(row.price_cents) / 100);
+      }
+      // Items missing from the chosen list keep their retail price and are flagged for the UI.
+      const applyTier = (item: any) => {
+        if (!tier || item.item_type === "course") return item;
+        const tierPrice = tierPrices.get(`${item.item_type}:${item.id}`);
+        return tierPrice === undefined ? { ...item, tier_priced: false }
+          : { ...item, retail_price: item.price, price: tierPrice, tier_priced: true };
+      };
       const data = [
         ...(results[0].data || []).filter(product => validPrice(product.price)).map(product => ({ ...product, item_type: "product" })),
         ...(results[1].data || []).filter(bundle => validPrice(bundle.price_cents)).map(bundle => ({ id: bundle.id, name: bundle.name, price: Number(bundle.price_cents) / 100, item_type: "bundle" })),
+        ...(results[3].data || []).filter(extra => validPrice(extra.retail_price_cents))
+          .map(extra => ({ id: extra.id, name: extra.name, price: Number(extra.retail_price_cents) / 100, item_type: "extra" })),
         ...(results[2].data || []).flatMap(course => {
           if (Array.isArray(course.packages) && course.packages.length) {
             return course.packages.flatMap((pkg, index) => validPrice(pkg?.price) && typeof pkg?.name === "string" && pkg.name.trim()
@@ -92,8 +120,8 @@ export const handler: Handler = async event => {
           }
           return validPrice(course.price) ? [{ id: course.id, name: course.title, price: Number(course.price), item_type: "course" }] : [];
         }),
-      ].sort((a, b) => a.name.localeCompare(b.name));
-      return json(200, { data });
+      ].map(applyTier).sort((a, b) => a.name.localeCompare(b.name));
+      return json(200, { data, tiers });
     }
 
     // Items are removed by the ON DELETE CASCADE foreign key in the same statement.
@@ -110,11 +138,12 @@ export const handler: Handler = async event => {
       let body;
       try { body = JSON.parse(event.body || "{}"); }
       catch { return json(400, { error: "Invalid invoice submission" }); }
-      const { request_id, customer_name, customer_phone = "", customer_email = "", items } = body || {};
+      const { request_id, customer_name, customer_phone = "", customer_email = "", items, price_tier = null } = body || {};
       if (typeof request_id !== "string" || !uuid.test(request_id)
         || typeof customer_name !== "string" || !customer_name.trim() || customer_name.trim().length > 160
         || typeof customer_phone !== "string" || customer_phone.length > 40
         || typeof customer_email !== "string" || customer_email.length > 254
+        || (price_tier !== null && (typeof price_tier !== "string" || !tierSlug.test(price_tier)))
         || (customer_email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customer_email.trim()))
         || !Array.isArray(items) || items.length < 1 || items.length > 100
         || items.some(item => !item || !uuid.test(item.product_id || "")
@@ -126,13 +155,13 @@ export const handler: Handler = async event => {
         return json(400, { error: "Enter a customer name, valid contact details and product quantities (1–9999)." });
       }
       const bank = bankingDetails();
-      const { data, error } = await db.rpc("create_in_store_invoice", {
+      const { data, error } = await db.rpc("create_in_store_invoice_tiered", {
         p_request_id: request_id, p_created_by: auth.userId,
         p_customer_name: customer_name.trim(), p_customer_phone: customer_phone.trim(),
         p_customer_email: customer_email.trim(),
         p_items: items.map(item => ({ product_id: item.product_id, item_type: item.item_type ?? "product",
           course_package_index: item.course_package_index ?? null, quantity: item.quantity, expected_price_cents: item.expected_price_cents })),
-        p_banking_details: bank,
+        p_banking_details: bank, p_price_tier: price_tier,
       });
       if (error) {
         if (error.code === "P0001") return json(409, { error: error.message });
