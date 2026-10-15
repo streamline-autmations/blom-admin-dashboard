@@ -57,6 +57,8 @@ function mockDb({ role = 'staff', responses = {}, rpcResult = { data: id, error:
         eq(...args) { call.filters.push(['eq', ...args]); return query; },
         or(value) { call.filters.push(['or', value]); return query; },
         ilike(...args) { call.filters.push(['ilike', ...args]); return query; },
+        like(...args) { call.filters.push(['like', ...args]); return query; },
+        insert(value) { call.insert = value; return query; },
         order(...args) { call.filters.push(['order', ...args]); return query; },
         limit(value) { call.limit = value; return query; },
         range(...args) { call.range = args; return query; },
@@ -290,4 +292,74 @@ test('existing online invoice handler still renders, uploads and returns the rec
   assert.equal(calls.find(call => call.update).update.invoice_url, 'https://example.invalid/receipt.pdf');
   const urlResponse = await online.handler(event('POST', { return_url: '1' }, { m_payment_id: 'BL-ONLINE' }));
   assert.equal(JSON.parse(urlResponse.body).invoice_url, 'https://example.invalid/receipt.pdf');
+});
+
+const customRow = { id: productId, name: 'Coke 330ml', retail_price_cents: 1800 };
+
+test('saves a new custom item as an invoice-only item with a CUSTOM- code', async () => {
+  const calls = mockDb({ responses: { invoice_only_items: call => call.insert
+    ? { data: [{ ...customRow, name: call.insert.name }], error: null } : { data: [], error: null } } });
+  const response = await manual.handler(event('POST', { action: 'custom-item' }, { name: '  Coke   330ml ', price: '18' }));
+  assert.equal(response.statusCode, 201);
+  const insert = calls.find(call => call.insert).insert;
+  assert.match(insert.code, /^CUSTOM-[0-9A-F]{8}$/);
+  assert.equal(insert.name, 'Coke 330ml');
+  assert.equal(insert.retail_price_cents, 1800);
+  assert.deepEqual(JSON.parse(response.body).item, { id: productId, name: 'Coke 330ml', price: 18, item_type: 'extra', is_custom: true });
+});
+
+test('saving an existing custom name updates its price instead of duplicating it', async () => {
+  const calls = mockDb({ responses: { invoice_only_items: call => call.update
+    ? { data: [{ ...customRow, retail_price_cents: call.update.retail_price_cents }], error: null } : { data: [{ id: productId, name: 'Coke 330ML' }, { id, name: 'Water 500ml' }], error: null } } });
+  const response = await manual.handler(event('POST', { action: 'custom-item' }, { name: 'coke 330ml', price: 20 }));
+  assert.equal(response.statusCode, 200);
+  assert.ok(!calls.some(call => call.insert));
+  assert.equal(calls.find(call => call.update).update.retail_price_cents, 2000);
+  assert.ok(calls.some(call => call.filters.some(filter => filter[0] === 'like' && filter[2] === 'CUSTOM-%')));
+  assert.equal(JSON.parse(response.body).item.price, 20);
+});
+
+test('rejects invalid custom items before touching the database', async () => {
+  const calls = mockDb();
+  for (const body of [{ name: '', price: 5 }, { name: 'Water', price: -1 }, { name: 'Water', price: 'abc' },
+    { name: 'Water' }, { name: 'Water', price: 1e9 }, { name: 'x'.repeat(161), price: 5 }, { name: 'Water', price: 5, id: 'nope' }]) {
+    assert.equal((await manual.handler(event('POST', { action: 'custom-item' }, body))).statusCode, 400, JSON.stringify(body));
+  }
+  assert.ok(!calls.some(call => call.table === 'invoice_only_items'));
+});
+
+test('removing a saved item only hides CUSTOM- items', async () => {
+  const calls = mockDb({ responses: { invoice_only_items: { data: [{ id: productId }], error: null } } });
+  assert.equal((await manual.handler(event('DELETE', { custom_item: 'bad' }))).statusCode, 400);
+  const response = await manual.handler(event('DELETE', { custom_item: productId }));
+  assert.equal(response.statusCode, 200);
+  const call = calls.find(entry => entry.table === 'invoice_only_items');
+  assert.deepEqual(call.update, { is_active: false });
+  assert.ok(call.filters.some(filter => filter[0] === 'like' && filter[2] === 'CUSTOM-%'));
+  assert.ok(!calls.some(entry => entry.delete));
+});
+
+test('catalog flags custom items and never marks them as missing from a price list', async () => {
+  mockDb({ responses: {
+    invoice_only_items: { data: [{ ...customRow, code: 'CUSTOM-ABCD1234' }, { id, code: 'GS01', name: 'Art Gel', retail_price_cents: 9000 }], error: null },
+    price_tiers: { data: [{ slug: 'distributor', name: 'Distributor' }], error: null },
+    tier_prices: { data: [], error: null },
+  } });
+  const body = JSON.parse((await manual.handler(event('GET', { action: 'catalog', tier: 'distributor' }))).body);
+  const coke = body.data.find(item => item.name === 'Coke 330ml');
+  assert.equal(coke.is_custom, true);
+  assert.equal(coke.tier_priced, undefined);
+  const gel = body.data.find(item => item.name === 'Art Gel');
+  assert.equal(gel.is_custom, undefined);
+  assert.equal(gel.tier_priced, false);
+});
+
+test('a custom name containing wildcard characters never matches another saved item', async () => {
+  const calls = mockDb({ responses: { invoice_only_items: call => call.insert
+    ? { data: [{ id: id, name: call.insert.name, retail_price_cents: 500 }], error: null }
+    : { data: [{ id: productId, name: 'Water 500ml' }], error: null } } });
+  const response = await manual.handler(event('POST', { action: 'custom-item' }, { name: 'Water*', price: 5 }));
+  assert.equal(response.statusCode, 201);
+  assert.ok(calls.some(call => call.insert));
+  assert.ok(!calls.some(call => call.update));
 });

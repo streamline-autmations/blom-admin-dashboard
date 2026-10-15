@@ -1,5 +1,6 @@
 import type { Handler } from "@netlify/functions";
 import { createClient } from "@supabase/supabase-js";
+import { randomUUID } from "crypto";
 import { requireAdminUser } from "./_lib/require-admin-user";
 import { generateInvoiceDocument } from "./_lib/invoice-document";
 
@@ -14,6 +15,10 @@ const validPrice = (price: unknown) => (typeof price === 'number' || (typeof pri
 const searchLiteral = (value: string) => value.replace(/\\/g, "\\\\").replace(/[%_]/g, "\\$&");
 const catalogPage = 1000;
 const tierSlug = /^[a-z0-9_]{2,40}$/;
+// Items staff type in at the till (a Coke, a bottle of water) are saved as invoice-only items
+// whose code starts with this prefix, so they can be told apart from the price-sheet extras.
+const customPrefix = "CUSTOM-";
+const maxCustomPriceCents = 100_000_00;
 
 // PostgREST caps each response, so page through until a short page proves we have every row.
 async function allRows(query: () => { range: (from: number, to: number) => PromiseLike<{ data: any[] | null; error: any }> }) {
@@ -75,7 +80,7 @@ export const handler: Handler = async event => {
       const bundles = () => db.from("bundles").select("id,name,price_cents").eq("is_active", true)
         .or("status.is.null,status.not.in.(archived,deleted)");
       // Sheet-only reseller items that are not sold on the website.
-      const extras = () => db.from("invoice_only_items").select("id,name,retail_price_cents").eq("is_active", true);
+      const extras = () => db.from("invoice_only_items").select("id,code,name,retail_price_cents").eq("is_active", true);
       const courses = () => db.from("courses").select("id,title,price,packages").eq("is_active", true);
       const results = await Promise.all(full ? [
         allRows(() => products().order("name").order("id")),
@@ -103,7 +108,7 @@ export const handler: Handler = async event => {
       }
       // Items missing from the chosen list keep their retail price and are flagged for the UI.
       const applyTier = (item: any) => {
-        if (!tier || item.item_type === "course") return item;
+        if (!tier || item.item_type === "course" || item.is_custom) return item;
         const tierPrice = tierPrices.get(`${item.item_type}:${item.id}`);
         return tierPrice === undefined ? { ...item, tier_priced: false }
           : { ...item, retail_price: item.price, price: tierPrice, tier_priced: true };
@@ -112,7 +117,8 @@ export const handler: Handler = async event => {
         ...(results[0].data || []).filter(product => validPrice(product.price)).map(product => ({ ...product, item_type: "product" })),
         ...(results[1].data || []).filter(bundle => validPrice(bundle.price_cents)).map(bundle => ({ id: bundle.id, name: bundle.name, price: Number(bundle.price_cents) / 100, item_type: "bundle" })),
         ...(results[3].data || []).filter(extra => validPrice(extra.retail_price_cents))
-          .map(extra => ({ id: extra.id, name: extra.name, price: Number(extra.retail_price_cents) / 100, item_type: "extra" })),
+          .map(extra => ({ id: extra.id, name: extra.name, price: Number(extra.retail_price_cents) / 100, item_type: "extra",
+            ...(String(extra.code).startsWith(customPrefix) ? { is_custom: true } : {}) })),
         ...(results[2].data || []).flatMap(course => {
           if (Array.isArray(course.packages) && course.packages.length) {
             return course.packages.flatMap((pkg, index) => validPrice(pkg?.price) && typeof pkg?.name === "string" && pkg.name.trim()
@@ -124,6 +130,16 @@ export const handler: Handler = async event => {
       return json(200, { data, tiers });
     }
 
+    // Saved custom items are only hidden: old invoices keep their own name/price snapshots.
+    if (event.httpMethod === "DELETE" && query.custom_item) {
+      if (!uuid.test(query.custom_item)) return json(400, { error: "Invalid item ID" });
+      const { data, error } = await db.from("invoice_only_items").update({ is_active: false })
+        .eq("id", query.custom_item).like("code", `${customPrefix}%`).select("id");
+      if (error) throw error;
+      if (!data?.length) return json(404, { error: "Saved item not found. It may already have been removed." });
+      return json(200, { removed: query.custom_item });
+    }
+
     // Items are removed by the ON DELETE CASCADE foreign key in the same statement.
     if (event.httpMethod === "DELETE") {
       if (!uuid.test(query.id || "")) return json(400, { error: "Invalid invoice ID" });
@@ -131,6 +147,38 @@ export const handler: Handler = async event => {
       if (error) throw error;
       if (!data?.length) return json(404, { error: "Invoice not found. It may already have been deleted." });
       return json(200, { deleted: query.id });
+    }
+
+    // Create (or update the price of) a custom item. Saving a name that already exists updates
+    // that item instead of adding a duplicate; passing `id` edits that exact item.
+    if (event.httpMethod === "POST" && query.action === "custom-item") {
+      let body: any;
+      try { body = JSON.parse(event.body || "{}"); }
+      catch { return json(400, { error: "Invalid item" }); }
+      const name = typeof body?.name === "string" ? body.name.trim().replace(/\s+/g, " ") : "";
+      const priceCents = validPrice(body?.price) ? Math.round(Number(body.price) * 100) : NaN;
+      if (!name || name.length > 160 || !Number.isSafeInteger(priceCents) || priceCents > maxCustomPriceCents
+        || (body?.id != null && (typeof body.id !== "string" || !uuid.test(body.id)))) {
+        return json(400, { error: "Enter an item name and a price between R0 and R100 000." });
+      }
+      const customItem = (row: any) => ({ id: row.id, name: row.name, price: Number(row.retail_price_cents) / 100, item_type: "extra", is_custom: true });
+      let targetId: string | undefined = body?.id ?? undefined;
+      if (!targetId) {
+        // Compare in code: PostgREST pattern filters treat characters like * as wildcards, which
+        // could let "Water*" match (and overwrite) "Water 500ml".
+        const existing = await allRows(() => db.from("invoice_only_items").select("id,name").eq("is_active", true)
+          .like("code", `${customPrefix}%`).order("id"));
+        if (existing.error) throw existing.error;
+        targetId = existing.data?.find(row => String(row.name).trim().toLowerCase() === name.toLowerCase())?.id;
+      }
+      const saved = targetId
+        ? await db.from("invoice_only_items").update({ name, retail_price_cents: priceCents })
+          .eq("id", targetId).eq("is_active", true).like("code", `${customPrefix}%`).select("id,name,retail_price_cents")
+        : await db.from("invoice_only_items").insert({ code: `${customPrefix}${randomUUID().slice(0, 8).toUpperCase()}`,
+          name, retail_price_cents: priceCents }).select("id,name,retail_price_cents");
+      if (saved.error) throw saved.error;
+      if (!saved.data?.length) return json(404, { error: "That saved item no longer exists. Search again." });
+      return json(targetId ? 200 : 201, { item: customItem(saved.data[0]) });
     }
 
     let invoiceId = query.id;

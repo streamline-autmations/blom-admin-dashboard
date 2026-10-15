@@ -47,12 +47,14 @@
   border: 2px solid hsl(var(--primary) / 0.45);
   background: hsl(var(--card));
 }
+.in-store-invoices .invoice-result-row,
+.in-store-invoices .invoice-custom-add { border-bottom: 1px solid hsl(var(--border)); }
+.in-store-invoices .invoice-result-row:last-child,
+.in-store-invoices .invoice-custom-add:last-child { border-bottom: 0; }
 .in-store-invoices .invoice-result {
-  border-bottom: 1px solid hsl(var(--border));
   box-shadow: inset 0 0 0 transparent;
   transition: background-color 120ms ease, box-shadow 120ms ease;
 }
-.in-store-invoices .invoice-result:last-child { border-bottom: 0; }
 .in-store-invoices .invoice-result-meta { color: hsl(var(--foreground) / 0.72); }
 .in-store-invoices .invoice-result-add {
   border: 2px solid hsl(var(--primary));
@@ -65,6 +67,17 @@
 .in-store-invoices .invoice-result[data-active]:not(:disabled) .invoice-result-add {
   background: hsl(var(--primary));
   color: hsl(var(--primary-foreground));
+}
+.in-store-invoices .invoice-custom-add {
+  background: hsl(var(--invoice-zone));
+  color: hsl(var(--foreground));
+  transition: background-color 120ms ease;
+}
+.in-store-invoices .invoice-custom-add:hover,
+.in-store-invoices .invoice-custom-add:focus-visible { background: hsl(var(--invoice-active)); outline: none; }
+.in-store-invoices .invoice-custom {
+  background: hsl(var(--invoice-zone));
+  border: 2px solid hsl(var(--primary) / 0.55);
 }
 .in-store-invoices .invoice-added-badge {
   background: hsl(var(--invoice-added-bg));
@@ -86,6 +99,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .in-store-invoices .invoice-result,
+  .in-store-invoices .invoice-custom-add,
   .in-store-invoices .invoice-history-link { transition: none; }
 }
 

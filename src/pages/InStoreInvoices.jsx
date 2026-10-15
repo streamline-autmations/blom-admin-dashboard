@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, Download, FileText, Minus, Plus, Printer, Search, Trash2 } from 'lucide-react';
+import { Check, Download, FileText, Minus, Pencil, Plus, PlusCircle, Printer, Search, Trash2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -14,6 +14,7 @@ const itemKey = item => `${item.item_type || 'product'}:${item.product_id || ite
 const itemLabel = type => ({ product: 'Product', bundle: 'Bundle', course: 'Course', extra: 'Product' })[type || 'product'];
 const normalise = value => value.toLocaleLowerCase('en-ZA').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 const maxResults = 40;
+const emptyCustom = { id: null, name: '', price: '' };
 
 // Every typed word must appear in the name; names starting with the search rank first.
 function searchCatalog(catalog, search) {
@@ -38,6 +39,9 @@ export default function InStoreInvoices() {
   const [search, setSearch] = useState('');
   const [activeResult, setActiveResult] = useState(0);
   const [lastAdded, setLastAdded] = useState('');
+  const [custom, setCustom] = useState(null);
+  const [customBusy, setCustomBusy] = useState(false);
+  const [customError, setCustomError] = useState('');
   const [saved, setSaved] = useState(null);
   const [page, setPage] = useState(1);
   const [historySearch, setHistorySearch] = useState('');
@@ -56,6 +60,8 @@ export default function InStoreInvoices() {
   const savedRef = useRef(null);
   const historyRef = useRef(null);
   const searchRef = useRef(null);
+  const customNameRef = useRef(null);
+  const customPriceRef = useRef(null);
   const resultsRef = useRef(null);
   useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
   useEffect(() => {
@@ -66,7 +72,7 @@ export default function InStoreInvoices() {
   }, [saved]);
   useEffect(() => {
     if (id) {
-      setSaved(null); setItems([]); setTier(''); pricedFor.current = ''; setSearch(''); setLastAdded(''); setError('');
+      setSaved(null); setItems([]); setTier(''); pricedFor.current = ''; setSearch(''); setLastAdded(''); setError(''); setCustom(null);
       setCustomer({ customer_name: '', customer_phone: '', customer_email: '' });
       requestId.current = null; submission.current = null;
     }
@@ -145,10 +151,64 @@ export default function InStoreInvoices() {
         price_cents: Math.round(Number(product.price) * 100), quantity: 1 }];
     });
   };
+  // Items that are not on the website (a Coke, a bottle of water) are saved as they are added,
+  // so they show up in the search next time. Saving a name that already exists updates its price.
+  const openCustom = (fields = {}) => {
+    setCustom({ ...emptyCustom, name: search.trim(), ...fields });
+    setCustomError('');
+    window.setTimeout(() => (fields.name || search.trim() ? customPriceRef : customNameRef).current?.focus(), 0);
+  };
+  const closeCustom = () => { setCustom(null); setCustomError(''); searchRef.current?.focus(); };
+  const saveCustom = async () => {
+    const name = custom.name.trim().replace(/\s+/g, ' ');
+    const price = Number(custom.price);
+    if (!name) { setCustomError('Enter the item name.'); customNameRef.current?.focus(); return; }
+    if (custom.price === '' || !Number.isFinite(price) || price < 0 || price > 100000) {
+      setCustomError('Enter a price between R0 and R100 000.'); customPriceRef.current?.focus(); return;
+    }
+    setCustomBusy(true);
+    setCustomError('');
+    try {
+      const { item } = await invoiceRequest('?action=custom-item', { method: 'POST', body: JSON.stringify({ id: custom.id, name, price }) });
+      const key = itemKey(item);
+      const priceCents = Math.round(item.price * 100);
+      // Decide add-vs-update against the latest lines, not the ones captured when the request started.
+      // A same-name save may have just changed the price, so an existing line always takes the saved price.
+      setItems(previous => {
+        if (previous.some(line => itemKey(line) === key)) {
+          return previous.map(line => itemKey(line) === key ? { ...line, product_name: item.name, price_cents: priceCents,
+            quantity: custom.id ? line.quantity : Math.min(9999, line.quantity + 1) } : line);
+        }
+        if (custom.id || previous.length >= 100) return previous;
+        return [...previous, { product_id: item.id, product_name: item.name, item_type: 'extra', course_package_index: null, price_cents: priceCents, quantity: 1 }];
+      });
+      setLastAdded(custom.id ? `Saved ${item.name}` : `Added ${item.name}`);
+      await queryClient.invalidateQueries({ queryKey: ['invoiceCatalog'] });
+      setCustom(null);
+      setSearch('');
+      searchRef.current?.focus();
+    } catch (failure) { setCustomError(failure.message); }
+    finally { setCustomBusy(false); }
+  };
+  const removeCustom = async product => {
+    setCustomBusy(true);
+    setError('');
+    try {
+      await invoiceRequest(`?custom_item=${encodeURIComponent(product.id)}`, { method: 'DELETE' });
+      setItems(previous => previous.filter(line => itemKey(line) !== itemKey(product)));
+      setLastAdded(`Removed ${product.name} from saved items`);
+      await queryClient.invalidateQueries({ queryKey: ['invoiceCatalog'] });
+    } catch (failure) { setError(failure.message); }
+    finally { setCustomBusy(false); }
+  };
   const onSearchKeyDown = event => {
     if (event.key === 'ArrowDown' && results.length) { event.preventDefault(); setActiveResult(index => Math.min(results.length - 1, index + 1)); }
     else if (event.key === 'ArrowUp' && results.length) { event.preventDefault(); setActiveResult(index => Math.max(0, index - 1)); }
-    else if (event.key === 'Enter') { event.preventDefault(); if (results[activeResult]) addProduct(results[activeResult]); }
+    else if (event.key === 'Enter') {
+      event.preventDefault();
+      if (results[activeResult]) addProduct(results[activeResult]);
+      else if (search.trim() && !catalog.isPending && !catalog.isError) openCustom();
+    }
     else if (event.key === 'Escape' && search) { event.preventDefault(); setSearch(''); }
   };
   const changeQuantity = (key, quantity) => {
@@ -158,7 +218,7 @@ export default function InStoreInvoices() {
 
   const createInvoice = async event => {
     event.preventDefault();
-    if (submitting.current) return;
+    if (submitting.current || customBusy) return;
     if (!items.length) { setError('Search for an item and add it to the invoice.'); return; }
     const body = { ...customer, price_tier: tier || null, items: items.map(item => ({ product_id: item.product_id,
       item_type: item.item_type, course_package_index: item.course_package_index,
@@ -206,7 +266,7 @@ export default function InStoreInvoices() {
     finally { setDeleting(false); }
   };
   const newInvoice = () => {
-    setSaved(null); setItems([]); setTier(''); pricedFor.current = ''; setSearch(''); setLastAdded(''); setError('');
+    setSaved(null); setItems([]); setTier(''); pricedFor.current = ''; setSearch(''); setLastAdded(''); setError(''); setCustom(null);
     setCustomer({ customer_name: '', customer_phone: '', customer_email: '' });
     requestId.current = null; submission.current = null;
   };
@@ -241,22 +301,23 @@ export default function InStoreInvoices() {
                 aria-activedescendant={results.length ? `invoice-result-${activeResult}` : undefined} />
             </div>
             <p className="sr-only" role="status" aria-live="polite">{lastAdded}</p>
-            {search.trim() && <div ref={resultsRef} id="invoice-search-results" role="listbox" aria-label="Search results"
+            {search.trim() && !custom && <div ref={resultsRef} id="invoice-search-results" role="listbox" aria-label="Search results"
               className="invoice-search-results mt-2 max-h-[22rem] overflow-y-auto rounded-md">
               {catalog.isPending ? <p role="status" className="p-4 text-base">Loading products…</p>
                 : catalog.isError ? <div role="alert" className="p-4 text-base">{catalog.error.message}<Button type="button" variant="ghost" onClick={() => catalog.refetch()}>Retry</Button></div>
                 : results.length ? results.map((product, index) => {
                   const added = quantities.get(itemKey(product));
                   const full = items.length >= 100 && !added;
-                  return <button type="button" key={itemKey(product)} id={`invoice-result-${index}`} data-result-index={index}
+                  return <div key={itemKey(product)} role="presentation" className="invoice-result-row flex items-stretch">
+                  <button type="button" id={`invoice-result-${index}`} data-result-index={index}
                     role="option" aria-selected={index === activeResult} disabled={full}
                     data-active={index === activeResult || undefined} data-added={!!added || undefined}
                     onMouseEnter={() => setActiveResult(index)}
                     onClick={() => { addProduct(product); searchRef.current?.focus(); }}
-                    className="invoice-result flex w-full items-center justify-between gap-3 px-4 py-3 text-left disabled:opacity-50">
+                    className="invoice-result flex min-w-0 flex-1 items-center justify-between gap-3 px-4 py-3 text-left disabled:opacity-50">
                     <span className="min-w-0">
                       <span className="block break-words text-base font-medium">{product.name}</span>
-                      <span className="invoice-result-meta block text-sm">{itemLabel(product.item_type)} · {money(product.price)}
+                      <span className="invoice-result-meta block text-sm">{product.is_custom ? 'Saved item' : itemLabel(product.item_type)} · {money(product.price)}
                         {product.tier_priced && <> · <s>{money(product.retail_price)}</s> {tierName}</>}
                         {product.tier_priced === false && ' · retail price (not on this list)'}</span>
                     </span>
@@ -268,8 +329,41 @@ export default function InStoreInvoices() {
                         <Plus aria-hidden="true" className="h-4 w-4" />{added ? 'Add 1 more' : 'Add'}
                       </span>
                     </span>
-                  </button>;
-                }) : <p role="status" className="p-4 text-base">No items found. Try another name.</p>}
+                  </button>
+                  {product.is_custom && <div className="flex shrink-0 items-center pr-2">
+                    <Button type="button" variant="ghost" className="h-11 w-11 px-0" disabled={customBusy} aria-label={`Edit saved item ${product.name}`} title="Edit name or price"
+                      onClick={() => openCustom({ id: product.id, name: product.name, price: String(product.price) })}><Pencil aria-hidden="true" /></Button>
+                    <Button type="button" variant="ghost" className="invoice-delete h-11 w-11 px-0" disabled={customBusy} aria-label={`Remove saved item ${product.name}`} title="Remove from saved items"
+                      onClick={() => removeCustom(product)}><Trash2 aria-hidden="true" /></Button>
+                  </div>}
+                  </div>;
+                }) : <p role="status" className="p-4 text-base">No items found. Try another name, or add it as a new item below.</p>}
+              {!catalog.isPending && !catalog.isError && <button type="button" onClick={() => openCustom()}
+                className="invoice-custom-add flex w-full items-center gap-3 px-4 py-3 text-left">
+                <PlusCircle aria-hidden="true" className="h-5 w-5 shrink-0" />
+                <span className="min-w-0"><span className="block break-words text-base font-medium">Not in the list? Add “{search.trim()}” as a new item</span>
+                  <span className="invoice-result-meta block text-sm">Enter a price once. It is saved for next time.</span></span>
+              </button>}
+            </div>}
+            {custom && <div role="group" aria-labelledby="custom-item-heading" className="invoice-custom mt-2 space-y-4 rounded-md p-4"
+              onKeyDown={event => { if (event.key === 'Enter' && event.target.tagName === 'INPUT') { event.preventDefault(); saveCustom(); } else if (event.key === 'Escape') { event.preventDefault(); if (!customBusy) closeCustom(); } }}>
+              <div className="flex items-center justify-between gap-3">
+                <h3 id="custom-item-heading" className="text-base font-semibold">{custom.id ? 'Edit saved item' : 'Add a new item'}</h3>
+                <Button type="button" variant="ghost" className="h-11 w-11 px-0" aria-label="Cancel" disabled={customBusy} onClick={closeCustom}><X aria-hidden="true" /></Button>
+              </div>
+              <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_10rem]">
+                <div><Label htmlFor="custom-item-name">Item name</Label>
+                  <Input id="custom-item-name" ref={customNameRef} className="mt-2 h-12 text-base" maxLength={160} autoComplete="off" value={custom.name} disabled={customBusy}
+                    onChange={event => setCustom(previous => ({ ...previous, name: event.target.value }))} placeholder="e.g. Coke 330ml" /></div>
+                <div><Label htmlFor="custom-item-price">Price (R)</Label>
+                  <Input id="custom-item-price" ref={customPriceRef} className="mt-2 h-12 text-base tabular-nums" type="number" min={0} max={100000} step="0.01" inputMode="decimal" value={custom.price} disabled={customBusy}
+                    onChange={event => setCustom(previous => ({ ...previous, price: event.target.value }))} placeholder="0.00" /></div>
+              </div>
+              {customError && <p role="alert" className="text-sm font-medium">{customError}</p>}
+              <div className="flex flex-wrap items-center gap-3">
+                <Button type="button" className="h-11" disabled={customBusy} onClick={saveCustom}><Plus aria-hidden="true" />{customBusy ? 'Saving…' : custom.id ? 'Save changes' : 'Add to invoice'}</Button>
+                <p className="text-sm text-muted-foreground">{custom.id ? 'The new price applies to future invoices too.' : 'Saved so you can search for it next time.'}</p>
+              </div>
             </div>}
             {search.trim() && results.length > 1 && <p className="mt-2 hidden text-sm text-muted-foreground sm:block">Tip: use the ↑ ↓ keys and press Enter to add, or Esc to clear the search.</p>}
           </fieldset>}
@@ -319,7 +413,7 @@ export default function InStoreInvoices() {
             <Button type="button" disabled={pdfBusy} className="w-full" onClick={() => pdfAction(false)}><Download aria-hidden="true" />{pdfBusy ? 'Preparing PDF…' : 'Download PDF'}</Button>
             <Button type="button" variant="outline" disabled={pdfBusy} className="w-full" onClick={() => pdfAction(true)}><Printer aria-hidden="true" />Print Invoice</Button>
             <p className="break-words text-sm text-muted-foreground">Please use {invoice.invoice_number} as your payment reference when making payment.</p>
-          </div> : <Button type="submit" disabled={busy || !items.length || catalog.isPlaceholderData || catalog.isError} className="w-full"><FileText aria-hidden="true" />{busy ? 'Saving invoice…' : 'Generate Invoice'}</Button>}
+          </div> : <Button type="submit" disabled={busy || customBusy || !items.length || catalog.isPlaceholderData || catalog.isError} className="w-full"><FileText aria-hidden="true" />{busy ? 'Saving invoice…' : 'Generate Invoice'}</Button>}
         </aside>
       </form>}
 
