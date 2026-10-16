@@ -98,7 +98,7 @@ test('requires a session and an existing owner/staff role for invoice access', a
   assert.equal(calls.length, 0);
   mockDb({ role: 'customer' });
   assert.equal((await manual.handler(event())).statusCode, 403);
-  assert.equal((await manual.handler(event('PUT'))).statusCode, 405);
+  assert.equal((await manual.handler(event('PATCH'))).statusCode, 405);
 });
 
 test('searches catalog names only with literal filter input and excludes invalid prices', async () => {
@@ -401,4 +401,36 @@ test('a long shipping label wraps instead of overlapping the quantity and price 
   assert.match(text, /THE COURIER GUY/);
   assert.match(text, /ADDRESS/);
   assert.match(text, /335\.50/);
+});
+
+test('editing a saved invoice calls the update RPC with the invoice ID and never touches banking or tier', async () => {
+  const calls = mockDb();
+  const edit = body => manual.handler(event('PUT', {}, { id, customer_name: ' Jane Smith ', customer_email: 'jane@example.com',
+    items: [{ product_id: productId, quantity: 3, expected_price_cents: 12500 }], request_id: 'ignored', price_tier: 'distributor',
+    total: 1, invoice_number: 'FORGED', ...body }));
+  const response = await edit({ shipping: 40, shipping_label: 'Courier' });
+  assert.equal(response.statusCode, 200);
+  const rpc = calls.find(call => call.rpc);
+  assert.equal(rpc.rpc, 'update_in_store_invoice');
+  assert.deepEqual(rpc.args, { p_invoice_id: id, p_updated_by: id, p_customer_name: 'Jane Smith', p_customer_phone: '',
+    p_customer_email: 'jane@example.com', p_items: [{ product_id: productId, item_type: 'product', course_package_index: null, quantity: 3, expected_price_cents: 12500 }],
+    p_shipping_cents: 4000, p_shipping_label: 'Courier' });
+  assert.ok(JSON.parse(response.body).invoice);
+  assert.equal(calls.filter(call => call.rpc).length, 1);
+  // The ID may also come from the query string; bad data is rejected before the database.
+  assert.equal((await manual.handler(event('PUT', { id }, { customer_name: 'A', items: [{ product_id: productId, quantity: 1, expected_price_cents: 100 }] }))).statusCode, 200);
+  const before = calls.filter(call => call.rpc).length;
+  for (const bad of [{ id: 'nope' }, { customer_name: '' }, { items: [] }, { shipping: -1 },
+    { items: [{ product_id: productId, quantity: 0, expected_price_cents: 1 }] }]) {
+    assert.equal((await edit(bad)).statusCode, 400, JSON.stringify(bad));
+  }
+  assert.equal(calls.filter(call => call.rpc).length, before);
+});
+
+test('editing maps a missing invoice to 404 and a changed price to 409', async () => {
+  mockDb({ rpcResult: { data: null, error: { code: 'P0002', message: 'Invoice not found. It may have been deleted.' } } });
+  const body = { id, customer_name: 'Jane', items: [{ product_id: productId, quantity: 1, expected_price_cents: 100 }] };
+  assert.equal((await manual.handler(event('PUT', {}, body))).statusCode, 404);
+  mockDb({ rpcResult: { data: null, error: { code: 'P0001', message: 'An item price changed.' } } });
+  assert.equal((await manual.handler(event('PUT', {}, body))).statusCode, 409);
 });

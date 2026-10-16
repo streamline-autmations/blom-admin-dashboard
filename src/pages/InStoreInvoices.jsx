@@ -41,6 +41,7 @@ export default function InStoreInvoices() {
   const [search, setSearch] = useState('');
   const [activeResult, setActiveResult] = useState(0);
   const [lastAdded, setLastAdded] = useState('');
+  const [editing, setEditing] = useState(null);
   const [custom, setCustom] = useState(null);
   const [shipping, setShipping] = useState(emptyShipping);
   const [customBusy, setCustomBusy] = useState(false);
@@ -73,12 +74,12 @@ export default function InStoreInvoices() {
       if (historyRef.current) historyRef.current.open = true;
     }
   }, [saved]);
+  // Any route change (opening, leaving or deleting an invoice) starts from a clean form, so an
+  // edit in progress can never be saved against a different or deleted invoice.
   useEffect(() => {
-    if (id) {
-      setSaved(null); setItems([]); setTier(''); pricedFor.current = ''; setSearch(''); setLastAdded(''); setError(''); setCustom(null); setShipping(emptyShipping);
-      setCustomer({ customer_name: '', customer_phone: '', customer_email: '' });
-      requestId.current = null; submission.current = null;
-    }
+    setSaved(null); setItems([]); setTier(''); pricedFor.current = ''; setSearch(''); setLastAdded(''); setError(''); setCustom(null); setShipping(emptyShipping); setEditing(null);
+    setCustomer({ customer_name: '', customer_phone: '', customer_email: '' });
+    requestId.current = null; submission.current = null;
   }, [id]);
 
   const history = useQuery({
@@ -93,7 +94,7 @@ export default function InStoreInvoices() {
     queryKey: ['invoiceCatalog', tier],
     queryFn: ({ signal }) => invoiceRequest(`?action=catalog${tier ? `&tier=${encodeURIComponent(tier)}` : ''}`, { signal }),
     staleTime: 5 * 60_000,
-    enabled: !saved && !id,
+    enabled: (!saved && !id) || !!editing,
     placeholderData: previous => previous,
   });
   // Remember the price lists so the picker (and its Retail fallback) survives a failed load.
@@ -118,7 +119,7 @@ export default function InStoreInvoices() {
     queryKey: ['inStoreInvoice', id],
     queryFn: () => invoiceRequest(`?id=${encodeURIComponent(id)}`),
     enabled: !!id,
-    staleTime: Infinity,
+    staleTime: 0,
     initialData: () => {
       const record = id && cachedInvoice(id);
       return record ? { invoice: record } : undefined;
@@ -127,7 +128,7 @@ export default function InStoreInvoices() {
   const prefetchInvoice = invoiceId => {
     if (cachedInvoice(invoiceId)) return;
     queryClient.prefetchQuery({ queryKey: ['inStoreInvoice', invoiceId],
-      queryFn: () => invoiceRequest(`?id=${encodeURIComponent(invoiceId)}`), staleTime: Infinity });
+      queryFn: () => invoiceRequest(`?id=${encodeURIComponent(invoiceId)}`), staleTime: 30_000 });
   };
   // A failed refetch keeps old data; never offer (or Enter-add) results that are not on screen.
   const results = useMemo(() => catalog.isError ? [] : searchCatalog(catalog.data?.data || [], search), [catalog.data, catalog.isError, search]);
@@ -135,8 +136,8 @@ export default function InStoreInvoices() {
   useEffect(() => {
     resultsRef.current?.querySelector(`[data-result-index="${activeResult}"]`)?.scrollIntoView({ block: 'nearest' });
   }, [activeResult]);
-  const invoice = id ? detail.data?.invoice : saved;
-  const readOnly = !!invoice || !!id;
+  const invoice = editing ? null : id ? detail.data?.invoice : saved;
+  const readOnly = !editing && (!!invoice || !!id);
   const lines = invoice?.in_store_invoice_items || items;
   const subtotal = invoice ? Number(invoice.subtotal) : items.reduce((sum, item) => sum + item.price_cents * item.quantity, 0) / 100;
   const shippingAmount = invoice ? Number(invoice.shipping || 0) : shipping.open && shipping.amount !== '' ? Number(shipping.amount) : 0;
@@ -208,6 +209,27 @@ export default function InStoreInvoices() {
     } catch (failure) { setError(failure.message); }
     finally { setCustomBusy(false); }
   };
+  // Editing reopens a saved invoice in the same form. Existing lines keep their saved prices
+  // (pricedFor is set so the price-list reprice effect leaves them alone); new lines use the
+  // invoice's own price list. The server re-checks everything on save.
+  const startEdit = record => {
+    setError('');
+    setCustomer({ customer_name: record.customer_name || '', customer_phone: record.customer_phone || '', customer_email: record.customer_email || '' });
+    setItems(record.in_store_invoice_items.map(line => ({ product_id: line.product_id, product_name: line.product_name,
+      item_type: line.item_type || 'product', course_package_index: line.course_package_index ?? null,
+      price_cents: Math.round(Number(line.unit_price) * 100), quantity: line.quantity })));
+    setTier(record.price_tier || '');
+    pricedFor.current = record.price_tier || '';
+    setShipping(Number(record.shipping) > 0 ? { open: true, label: record.shipping_label || '', amount: String(Number(record.shipping)) } : emptyShipping);
+    setSearch(''); setCustom(null); setLastAdded('');
+    requestId.current = null; submission.current = null;
+    setEditing(record);
+  };
+  const cancelEdit = () => {
+    setEditing(null); setItems([]); setTier(''); pricedFor.current = ''; setSearch(''); setCustom(null); setError('');
+    setShipping(emptyShipping);
+    setCustomer({ customer_name: '', customer_phone: '', customer_email: '' });
+  };
   const onSearchKeyDown = event => {
     if (event.key === 'ArrowDown' && results.length) { event.preventDefault(); setActiveResult(index => Math.min(results.length - 1, index + 1)); }
     else if (event.key === 'ArrowUp' && results.length) { event.preventDefault(); setActiveResult(index => Math.max(0, index - 1)); }
@@ -234,6 +256,7 @@ export default function InStoreInvoices() {
       item_type: item.item_type, course_package_index: item.course_package_index,
       quantity: item.quantity, expected_price_cents: item.price_cents })) };
     const serialized = JSON.stringify(body);
+    if (editing) return saveEdit(body);
     // A retry of unchanged input keeps its request ID; edited input is a new submission.
     if (submission.current !== serialized) {
       requestId.current = crypto.randomUUID();
@@ -249,6 +272,26 @@ export default function InStoreInvoices() {
     } catch (failure) {
       setError(failure.message);
       // A rejection is often a changed price: reload the catalog so re-adding uses the current one.
+      queryClient.invalidateQueries({ queryKey: ['invoiceCatalog'] });
+    }
+    finally { submitting.current = false; setBusy(false); }
+  };
+
+  const saveEdit = async body => {
+    submitting.current = true;
+    setBusy(true);
+    setError('');
+    try {
+      const { price_tier: _tier, ...fields } = body;
+      const result = await invoiceRequest('', { method: 'PUT', body: JSON.stringify({ ...fields, id: editing.id }) });
+      queryClient.setQueryData(['inStoreInvoice', editing.id], { invoice: result.invoice });
+      queryClient.invalidateQueries({ queryKey: ['inStoreInvoices'] });
+      if (saved?.id === editing.id) setSaved(result.invoice);
+      setEditing(null); setItems([]); setTier(''); pricedFor.current = ''; setShipping(emptyShipping);
+      setCustomer({ customer_name: '', customer_phone: '', customer_email: '' });
+      setLastAdded(`Saved changes to ${result.invoice.invoice_number}`);
+    } catch (failure) {
+      setError(failure.message);
       queryClient.invalidateQueries({ queryKey: ['invoiceCatalog'] });
     }
     finally { submitting.current = false; setBusy(false); }
@@ -276,7 +319,7 @@ export default function InStoreInvoices() {
     finally { setDeleting(false); }
   };
   const newInvoice = () => {
-    setSaved(null); setItems([]); setTier(''); pricedFor.current = ''; setSearch(''); setLastAdded(''); setError(''); setCustom(null); setShipping(emptyShipping);
+    setSaved(null); setItems([]); setTier(''); pricedFor.current = ''; setSearch(''); setLastAdded(''); setError(''); setCustom(null); setShipping(emptyShipping); setEditing(null);
     setCustomer({ customer_name: '', customer_phone: '', customer_email: '' });
     requestId.current = null; submission.current = null;
   };
@@ -285,19 +328,19 @@ export default function InStoreInvoices() {
     <div className="in-store-invoices mx-auto max-w-6xl space-y-6 text-foreground">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold">{invoice ? invoice.invoice_number : id ? 'In-Store Invoice' : 'Create In-Store Invoice'}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">{invoice ? `Created ${dateTime(invoice.created_at)}` : 'Add items and customer details, then generate your invoice.'}</p>
+          <h1 className="text-2xl font-semibold">{editing ? `Edit ${editing.invoice_number}` : invoice ? invoice.invoice_number : id ? 'In-Store Invoice' : 'Create In-Store Invoice'}</h1>
+          <p className="mt-1 text-sm text-muted-foreground">{editing ? 'Change the details below, then save. The invoice number stays the same.' : invoice ? `Created ${dateTime(invoice.created_at)}${invoice.updated_at ? ` · Edited ${dateTime(invoice.updated_at)}` : ''}` : 'Add items and customer details, then generate your invoice.'}</p>
         </div>
-        {(saved || id) && (id ? <Button asChild className="h-12 px-6 text-base font-semibold shadow-md"><Link to="/in-store-invoices"><Plus aria-hidden="true" />Create In-Store Invoice</Link></Button>
+        {(saved || id) && !editing && (id ? <Button asChild className="h-12 px-6 text-base font-semibold shadow-md"><Link to="/in-store-invoices"><Plus aria-hidden="true" />Create In-Store Invoice</Link></Button>
           : <Button type="button" className="h-12 px-6 text-base font-semibold shadow-md" onClick={newInvoice}><Plus aria-hidden="true" />Create another invoice</Button>)}
       </header>
 
       {error && <div ref={errorRef} role="alert" tabIndex={-1} className="rounded-md border border-destructive p-4 text-sm">{error}</div>}
-      {id && detail.isPending && <p role="status">Loading invoice…</p>}
+      {id && !editing && detail.isPending && <p role="status">Loading invoice…</p>}
       {id && detail.isError && <div role="alert">{detail.error.message}<Button variant="outline" onClick={() => detail.refetch()} className="ml-3">Retry</Button></div>}
-      {saved && <p ref={savedRef} tabIndex={-1} role="status" className="rounded-md border border-border bg-card p-4 text-sm">Invoice saved. You can download or print it below, or reopen it from saved invoices.</p>}
+      {saved && !editing && <p ref={savedRef} tabIndex={-1} role="status" className="rounded-md border border-border bg-card p-4 text-sm">Invoice saved. You can download or print it below, or reopen it from saved invoices.</p>}
 
-      {(!id || invoice) && <form onSubmit={createInvoice} className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+      {(!id || invoice || editing) && <form onSubmit={createInvoice} className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
         <section className="min-w-0 rounded-lg border border-border bg-card p-4 sm:p-6" aria-labelledby="invoice-products-heading">
           <h2 id="invoice-products-heading" className="text-lg font-semibold">{readOnly ? 'Invoice items' : 'Add items'}</h2>
           {!readOnly && <fieldset disabled={busy} className="mt-4">
@@ -400,9 +443,9 @@ export default function InStoreInvoices() {
 
         <aside className="space-y-5 rounded-lg border border-border bg-card p-4 sm:p-6">
           <h2 className="text-lg font-semibold">Customer</h2>
-          {(readOnly ? !!invoice?.price_tier_name : tiers.length > 0) && <div role="group" aria-labelledby="price-list-label">
+          {(readOnly ? !!invoice?.price_tier_name : editing ? !!editing.price_tier_name : tiers.length > 0) && <div role="group" aria-labelledby="price-list-label">
             <p id="price-list-label" className="text-sm font-medium">Price list</p>
-            {readOnly ? <p className="mt-2 text-base">{invoice.price_tier_name}</p> : <div className="mt-2 flex flex-wrap gap-2">
+            {readOnly ? <p className="mt-2 text-base">{invoice.price_tier_name}</p> : editing ? <p className="mt-2 text-base">{editing.price_tier_name} <span className="text-sm text-muted-foreground">(fixed for this invoice)</span></p> : <div className="mt-2 flex flex-wrap gap-2">
               {[{ slug: '', name: 'Retail' }, ...tiers].map(row => <Button key={row.slug || 'retail'} type="button" disabled={busy}
                 variant={tier === row.slug ? 'default' : 'outline'} aria-pressed={tier === row.slug} className="h-11"
                 onClick={() => setTier(row.slug)}>{row.name}</Button>)}
@@ -442,8 +485,10 @@ export default function InStoreInvoices() {
           {invoice ? <div className="space-y-3">
             <Button type="button" disabled={pdfBusy} className="w-full" onClick={() => pdfAction(false)}><Download aria-hidden="true" />{pdfBusy ? 'Preparing PDF…' : 'Download PDF'}</Button>
             <Button type="button" variant="outline" disabled={pdfBusy} className="w-full" onClick={() => pdfAction(true)}><Printer aria-hidden="true" />Print Invoice</Button>
+            <Button type="button" variant="outline" className="w-full" disabled={detail.isFetching} onClick={() => startEdit(invoice)}><Pencil aria-hidden="true" />Edit invoice</Button>
             <p className="break-words text-sm text-muted-foreground">Please use {invoice.invoice_number} as your payment reference when making payment.</p>
-          </div> : <Button type="submit" disabled={busy || customBusy || !items.length || (shipping.open && shipping.amount !== '' && !shippingValid) || catalog.isPlaceholderData || catalog.isError} className="w-full"><FileText aria-hidden="true" />{busy ? 'Saving invoice…' : 'Generate Invoice'}</Button>}
+          </div> : <div className="space-y-3"><Button type="submit" disabled={busy || customBusy || !items.length || (shipping.open && shipping.amount !== '' && !shippingValid) || (!editing && (catalog.isPlaceholderData || catalog.isError))} className="w-full"><FileText aria-hidden="true" />{busy ? 'Saving…' : editing ? 'Save changes' : 'Generate Invoice'}</Button>
+            {editing && <Button type="button" variant="outline" className="w-full" disabled={busy} onClick={cancelEdit}>Cancel</Button>}</div>}
         </aside>
       </form>}
 
