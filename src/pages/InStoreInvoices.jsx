@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, Download, FileText, Minus, Pencil, Plus, PlusCircle, Printer, Search, Trash2, X } from 'lucide-react';
+import { Check, Download, FileText, Minus, Pencil, Plus, PlusCircle, Printer, Search, Trash2, Truck, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -15,6 +15,8 @@ const itemLabel = type => ({ product: 'Product', bundle: 'Bundle', course: 'Cour
 const normalise = value => value.toLocaleLowerCase('en-ZA').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 const maxResults = 40;
 const emptyCustom = { id: null, name: '', price: '' };
+const emptyShipping = { open: false, label: '', amount: '' };
+const maxShipping = 10000;
 
 // Every typed word must appear in the name; names starting with the search rank first.
 function searchCatalog(catalog, search) {
@@ -40,6 +42,7 @@ export default function InStoreInvoices() {
   const [activeResult, setActiveResult] = useState(0);
   const [lastAdded, setLastAdded] = useState('');
   const [custom, setCustom] = useState(null);
+  const [shipping, setShipping] = useState(emptyShipping);
   const [customBusy, setCustomBusy] = useState(false);
   const [customError, setCustomError] = useState('');
   const [saved, setSaved] = useState(null);
@@ -72,7 +75,7 @@ export default function InStoreInvoices() {
   }, [saved]);
   useEffect(() => {
     if (id) {
-      setSaved(null); setItems([]); setTier(''); pricedFor.current = ''; setSearch(''); setLastAdded(''); setError(''); setCustom(null);
+      setSaved(null); setItems([]); setTier(''); pricedFor.current = ''; setSearch(''); setLastAdded(''); setError(''); setCustom(null); setShipping(emptyShipping);
       setCustomer({ customer_name: '', customer_phone: '', customer_email: '' });
       requestId.current = null; submission.current = null;
     }
@@ -135,7 +138,11 @@ export default function InStoreInvoices() {
   const invoice = id ? detail.data?.invoice : saved;
   const readOnly = !!invoice || !!id;
   const lines = invoice?.in_store_invoice_items || items;
-  const total = invoice ? Number(invoice.total) : items.reduce((sum, item) => sum + item.price_cents * item.quantity, 0) / 100;
+  const subtotal = invoice ? Number(invoice.subtotal) : items.reduce((sum, item) => sum + item.price_cents * item.quantity, 0) / 100;
+  const shippingAmount = invoice ? Number(invoice.shipping || 0) : shipping.open && shipping.amount !== '' ? Number(shipping.amount) : 0;
+  const shippingValid = Number.isFinite(shippingAmount) && shippingAmount >= 0 && shippingAmount <= maxShipping;
+  const shippingLabel = invoice ? invoice.shipping_label : shipping.label.trim();
+  const total = invoice ? Number(invoice.total) : subtotal + (shippingValid ? shippingAmount : 0);
   const currentCustomer = invoice || customer;
 
   const quantities = new Map(items.map(item => [itemKey(item), item.quantity]));
@@ -220,7 +227,10 @@ export default function InStoreInvoices() {
     event.preventDefault();
     if (submitting.current || customBusy) return;
     if (!items.length) { setError('Search for an item and add it to the invoice.'); return; }
-    const body = { ...customer, price_tier: tier || null, items: items.map(item => ({ product_id: item.product_id,
+    if (shipping.open && shipping.amount !== '' && !shippingValid) { setError('Enter a shipping cost between R0 and R10 000, or remove the shipping line.'); return; }
+    const withShipping = shipping.open && shipping.amount !== '' && shippingAmount > 0;
+    const body = { ...customer, price_tier: tier || null,
+      ...(withShipping ? { shipping: shippingAmount, shipping_label: shipping.label.trim() || null } : {}), items: items.map(item => ({ product_id: item.product_id,
       item_type: item.item_type, course_package_index: item.course_package_index,
       quantity: item.quantity, expected_price_cents: item.price_cents })) };
     const serialized = JSON.stringify(body);
@@ -266,7 +276,7 @@ export default function InStoreInvoices() {
     finally { setDeleting(false); }
   };
   const newInvoice = () => {
-    setSaved(null); setItems([]); setTier(''); pricedFor.current = ''; setSearch(''); setLastAdded(''); setError(''); setCustom(null);
+    setSaved(null); setItems([]); setTier(''); pricedFor.current = ''; setSearch(''); setLastAdded(''); setError(''); setCustom(null); setShipping(emptyShipping);
     setCustomer({ customer_name: '', customer_phone: '', customer_email: '' });
     requestId.current = null; submission.current = null;
   };
@@ -405,7 +415,27 @@ export default function InStoreInvoices() {
             <div><Label htmlFor="invoice-phone">Phone number <span className="font-normal text-muted-foreground">(optional)</span></Label><Input id="invoice-phone" className="mt-2 h-11" type="tel" autoComplete="tel" maxLength={40} value={currentCustomer.customer_phone || ''} onChange={event => setCustomer(previous => ({ ...previous, customer_phone: event.target.value }))} /></div>
             <div><Label htmlFor="invoice-email">Email <span className="font-normal text-muted-foreground">(optional)</span></Label><Input id="invoice-email" className="mt-2 h-11" type="email" autoComplete="email" maxLength={254} value={currentCustomer.customer_email || ''} onChange={event => setCustomer(previous => ({ ...previous, customer_email: event.target.value }))} /></div>
           </fieldset>
+          {!readOnly && (shipping.open
+            ? <div role="group" aria-labelledby="shipping-heading" className="invoice-custom space-y-3 rounded-md p-4">
+              <div className="flex items-center justify-between gap-3">
+                <h3 id="shipping-heading" className="text-base font-semibold">Shipping / courier cost</h3>
+                <Button type="button" variant="ghost" className="h-11 w-11 px-0" disabled={busy} aria-label="Remove shipping line" onClick={() => setShipping(emptyShipping)}><X aria-hidden="true" /></Button>
+              </div>
+              <div><Label htmlFor="shipping-amount">Amount (R)</Label>
+                <Input id="shipping-amount" className="mt-2 h-11 tabular-nums" type="number" min={0} max={maxShipping} step="0.01" inputMode="decimal" disabled={busy} value={shipping.amount} placeholder="0.00"
+                  onChange={event => setShipping(previous => ({ ...previous, amount: event.target.value }))} /></div>
+              <div><Label htmlFor="shipping-label">Label <span className="font-normal text-muted-foreground">(optional)</span></Label>
+                <Input id="shipping-label" className="mt-2 h-11" maxLength={60} disabled={busy} value={shipping.label} placeholder="Shipping & Handling"
+                  onChange={event => setShipping(previous => ({ ...previous, label: event.target.value }))} /></div>
+              {shipping.amount !== '' && !shippingValid && <p role="alert" className="text-sm font-medium">Enter an amount between R0 and R10 000.</p>}
+            </div>
+            : <Button type="button" variant="outline" className="h-11 w-full justify-start" disabled={busy}
+              onClick={() => setShipping({ ...emptyShipping, open: true })}><Truck aria-hidden="true" />Add shipping or courier cost</Button>)}
           <dl aria-live="polite" className="space-y-3 border-t border-border pt-5 tabular-nums">
+            {shippingAmount > 0 && shippingValid && <>
+              <div className="flex justify-between gap-3 text-base"><dt>Subtotal</dt><dd>{money(subtotal)}</dd></div>
+              <div className="flex justify-between gap-3 text-base"><dt className="min-w-0 break-words">{shippingLabel || 'Shipping & Handling'}</dt><dd>{money(shippingAmount)}</dd></div>
+            </>}
             <div className="flex justify-between gap-3 text-xl font-semibold"><dt>Total</dt><dd>{money(total)}</dd></div>
           </dl>
           {((invoice?.banking_details?.is_placeholder === 'true') || (!readOnly && history.data?.banking_configured === false)) && <p className="text-sm text-muted-foreground">Banking details are placeholders. Confirm them before sharing this invoice for payment.</p>}
@@ -413,7 +443,7 @@ export default function InStoreInvoices() {
             <Button type="button" disabled={pdfBusy} className="w-full" onClick={() => pdfAction(false)}><Download aria-hidden="true" />{pdfBusy ? 'Preparing PDF…' : 'Download PDF'}</Button>
             <Button type="button" variant="outline" disabled={pdfBusy} className="w-full" onClick={() => pdfAction(true)}><Printer aria-hidden="true" />Print Invoice</Button>
             <p className="break-words text-sm text-muted-foreground">Please use {invoice.invoice_number} as your payment reference when making payment.</p>
-          </div> : <Button type="submit" disabled={busy || customBusy || !items.length || catalog.isPlaceholderData || catalog.isError} className="w-full"><FileText aria-hidden="true" />{busy ? 'Saving invoice…' : 'Generate Invoice'}</Button>}
+          </div> : <Button type="submit" disabled={busy || customBusy || !items.length || (shipping.open && shipping.amount !== '' && !shippingValid) || catalog.isPlaceholderData || catalog.isError} className="w-full"><FileText aria-hidden="true" />{busy ? 'Saving invoice…' : 'Generate Invoice'}</Button>}
         </aside>
       </form>}
 

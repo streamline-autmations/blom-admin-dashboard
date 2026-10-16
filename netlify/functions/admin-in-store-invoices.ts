@@ -19,6 +19,7 @@ const tierSlug = /^[a-z0-9_]{2,40}$/;
 // whose code starts with this prefix, so they can be told apart from the price-sheet extras.
 const customPrefix = "CUSTOM-";
 const maxCustomPriceCents = 100_000_00;
+const maxShippingCents = 10_000_00;
 
 // PostgREST caps each response, so page through until a short page proves we have every row.
 async function allRows(query: () => { range: (from: number, to: number) => PromiseLike<{ data: any[] | null; error: any }> }) {
@@ -186,11 +187,16 @@ export const handler: Handler = async event => {
       let body;
       try { body = JSON.parse(event.body || "{}"); }
       catch { return json(400, { error: "Invalid invoice submission" }); }
-      const { request_id, customer_name, customer_phone = "", customer_email = "", items, price_tier = null } = body || {};
+      const { request_id, customer_name, customer_phone = "", customer_email = "", items, price_tier = null, shipping = null, shipping_label = null } = body || {};
+      // Shipping / courier cost is optional: empty means none.
+      const hasShipping = shipping !== null && shipping !== "" && shipping !== undefined;
+      const shippingCents = hasShipping && validPrice(shipping) ? Math.round(Number(shipping) * 100) : hasShipping ? NaN : 0;
       if (typeof request_id !== "string" || !uuid.test(request_id)
         || typeof customer_name !== "string" || !customer_name.trim() || customer_name.trim().length > 160
         || typeof customer_phone !== "string" || customer_phone.length > 40
         || typeof customer_email !== "string" || customer_email.length > 254
+        || !Number.isSafeInteger(shippingCents) || shippingCents < 0 || shippingCents > maxShippingCents
+        || (shipping_label !== null && (typeof shipping_label !== "string" || shipping_label.trim().length > 60))
         || (price_tier !== null && (typeof price_tier !== "string" || !tierSlug.test(price_tier)))
         || (customer_email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customer_email.trim()))
         || !Array.isArray(items) || items.length < 1 || items.length > 100
@@ -203,13 +209,14 @@ export const handler: Handler = async event => {
         return json(400, { error: "Enter a customer name, valid contact details and product quantities (1–9999)." });
       }
       const bank = bankingDetails();
-      const { data, error } = await db.rpc("create_in_store_invoice_tiered", {
+      const { data, error } = await db.rpc("create_in_store_invoice_with_shipping", {
         p_request_id: request_id, p_created_by: auth.userId,
         p_customer_name: customer_name.trim(), p_customer_phone: customer_phone.trim(),
         p_customer_email: customer_email.trim(),
         p_items: items.map(item => ({ product_id: item.product_id, item_type: item.item_type ?? "product",
           course_package_index: item.course_package_index ?? null, quantity: item.quantity, expected_price_cents: item.expected_price_cents })),
         p_banking_details: bank, p_price_tier: price_tier,
+        p_shipping_cents: shippingCents, p_shipping_label: shippingCents > 0 ? (shipping_label || "").trim() || null : null,
       });
       if (error) {
         if (error.code === "P0001") return json(409, { error: error.message });
@@ -226,7 +233,7 @@ export const handler: Handler = async event => {
       if (!invoice) return json(404, { error: "Invoice not found" });
       invoice.in_store_invoice_items.sort((a, b) => a.position - b.position);
       if (event.httpMethod === "GET" && query.action === "pdf") {
-        const bytes = await generateInvoiceDocument(invoice,
+        const bytes = await generateInvoiceDocument({ ...invoice, shipping_cents: Math.round(Number(invoice.shipping || 0) * 100) },
           invoice.in_store_invoice_items.map(item => ({ ...item, name: item.product_name })),
           invoice.invoice_number, null, invoice.banking_details);
         return {

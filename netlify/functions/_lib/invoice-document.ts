@@ -317,12 +317,14 @@ export async function generateInvoiceDocument(order: any, normalizedItems: any[]
       drawRightText("R 0.00", right - 20, y, 10)
       y += ITEM_ROW_HEIGHT
     } else if (shippingAmount > 0) {
-      y = checkPageBreak(y, ITEM_ROW_HEIGHT)
-      drawText("Shipping & Handling", left, y, 10)
+      // A custom label (manual invoices) wraps like item names so it never covers the price columns.
+      const shippingLines = isManual && order.shipping_label ? wrapText(String(order.shipping_label), right - left - 210) : ["Shipping & Handling"]
+      y = checkPageBreak(y, Math.max(ITEM_ROW_HEIGHT, shippingLines.length * 13 + 3))
+      shippingLines.forEach((line, index) => drawText(line, left, y + index * 13, 10))
       drawRightText("1", right - 150, y, 10)
       drawRightText(money(shippingAmount), right - 90, y, 10)
       drawRightText(money(shippingAmount), right - 20, y, 10)
-      y += ITEM_ROW_HEIGHT
+      y += Math.max(ITEM_ROW_HEIGHT, shippingLines.length * 13 + 3)
     }
 
     // Discount line — only when there is an explicit discount

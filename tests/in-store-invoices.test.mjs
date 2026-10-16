@@ -363,3 +363,42 @@ test('a custom name containing wildcard characters never matches another saved i
   assert.ok(calls.some(call => call.insert));
   assert.ok(!calls.some(call => call.update));
 });
+
+test('shipping is optional, validated, and sent to the shipping-aware RPC', async () => {
+  const calls = mockDb();
+  const post = body => manual.handler(event('POST', {}, { ...submission, ...body }));
+  assert.equal((await post({})).statusCode, 201);
+  let rpc = calls.filter(call => call.rpc).at(-1);
+  assert.equal(rpc.rpc, 'create_in_store_invoice_with_shipping');
+  assert.equal(rpc.args.p_shipping_cents, 0);
+  assert.equal(rpc.args.p_shipping_label, null);
+  assert.equal((await post({ shipping: '85.50', shipping_label: ' Courier Guy ' })).statusCode, 201);
+  rpc = calls.filter(call => call.rpc).at(-1);
+  assert.equal(rpc.args.p_shipping_cents, 8550);
+  assert.equal(rpc.args.p_shipping_label, 'Courier Guy');
+  const before = calls.filter(call => call.rpc).length;
+  for (const bad of [{ shipping: -5 }, { shipping: 'abc' }, { shipping: 10001 }, { shipping: 5, shipping_label: 'x'.repeat(61) }, { shipping: 5, shipping_label: 7 }]) {
+    assert.equal((await post(bad)).statusCode, 400, JSON.stringify(bad));
+  }
+  assert.equal(calls.filter(call => call.rpc).length, before);
+});
+
+test('manual PDF prints the saved shipping line and total', async () => {
+  mockDb({ responses: { in_store_invoices: { data: { ...invoice, subtotal: 250, shipping: 85.5, shipping_label: 'Courier Guy', total: 335.5 }, error: null } } });
+  const response = await manual.handler(event('GET', { action: 'pdf', id }));
+  assert.equal(response.statusCode, 200);
+  const { text } = await pdfText(Buffer.from(response.body, 'base64'));
+  assert.match(text, /Courier Guy/);
+  assert.match(text, /335\.50/);
+});
+
+test('a long shipping label wraps instead of overlapping the quantity and price columns', async () => {
+  const label = 'THE COURIER GUY OVERNIGHT DELIVERY TO CUSTOMER WORK ADDRESS';
+  mockDb({ responses: { in_store_invoices: { data: { ...invoice, subtotal: 250, shipping: 85.5, shipping_label: label, total: 335.5 }, error: null } } });
+  const response = await manual.handler(event('GET', { action: 'pdf', id }));
+  const { text } = await pdfText(Buffer.from(response.body, 'base64'));
+  assert.ok(!text.includes(label), 'label is split across lines');
+  assert.match(text, /THE COURIER GUY/);
+  assert.match(text, /ADDRESS/);
+  assert.match(text, /335\.50/);
+});
