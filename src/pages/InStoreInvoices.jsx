@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { moneyZAR, dateTime } from '@/components/formatUtils';
-import { canSharePdfFiles, fetchInvoicePdf, invoiceRequest, invoiceShareLinks, openInvoicePdf, shareInvoicePdf } from '@/lib/inStoreInvoices';
+import { canSharePdfFiles, fetchInvoicePdf, invoiceRequest, invoiceShareLinks, openInvoicePdf, saveInvoicePdf, shareInvoicePdf } from '@/lib/inStoreInvoices';
 import './InStoreInvoices.css';
 
 const money = value => moneyZAR(Math.round(Number(value) * 100));
@@ -147,12 +147,13 @@ export default function InStoreInvoices() {
   const shippingLabel = invoice ? invoice.shipping_label : shipping.label.trim();
   const total = invoice ? Number(invoice.total) : subtotal + (shippingValid ? shippingAmount : 0);
   const currentCustomer = invoice || customer;
-  // Fetched as soon as an invoice is shown, so "Share PDF" can open the share menu on the click itself.
+  // Fetched as soon as an invoice is shown, so the send buttons can download it (and "Share PDF"
+  // can open the share menu) on the click itself.
   const canSharePdf = useMemo(() => canSharePdfFiles(), []);
   const sharePdfFile = useQuery({
     queryKey: ['inStoreInvoicePdf', invoice?.id, invoice?.updated_at || invoice?.created_at],
     queryFn: () => fetchInvoicePdf(invoice),
-    enabled: canSharePdf && !!invoice?.id,
+    enabled: !!invoice?.id,
     staleTime: Infinity, gcTime: 5 * 60_000, retry: 1,
   });
 
@@ -323,16 +324,25 @@ export default function InStoreInvoices() {
       window.setTimeout(() => setCopied(false), 2500);
     } catch { setError(`Could not copy automatically. The invoice link is: ${share.url}`); }
   };
+  const invoicePdf = async () => {
+    if (sharePdfFile.data) return sharePdfFile.data;
+    const result = await sharePdfFile.refetch();
+    if (result.error) throw result.error;
+    return result.data;
+  };
+  // WhatsApp and mail links can only carry text, so the chat / email opens (the link's own
+  // navigation) while the PDF downloads, ready to drag in.
+  const sendWithPdf = async channel => {
+    setError(''); setShareNote('');
+    try {
+      saveInvoicePdf(invoice, await invoicePdf());
+      setShareNote(`${invoice.invoice_number}.pdf downloaded. Drag it into the ${channel === 'whatsapp' ? 'WhatsApp chat' : 'email'} to attach it, then send.`);
+    } catch (failure) { setError(failure?.message || 'Could not download the invoice PDF. Use Download PDF instead.'); }
+  };
   const sharePdf = async () => {
     setError(''); setShareNote('');
     try {
-      let pdf = sharePdfFile.data;
-      if (!pdf) {
-        const result = await sharePdfFile.refetch();
-        if (result.error) throw result.error;
-        pdf = result.data;
-      }
-      await shareInvoicePdf(invoice, pdf);
+      await shareInvoicePdf(invoice, await invoicePdf());
     } catch (failure) {
       if (failure?.name === 'AbortError') return; // share menu closed without picking an app
       // The PDF took too long and the browser no longer counts this as part of the click.
@@ -524,13 +534,10 @@ export default function InStoreInvoices() {
             <Button type="button" variant="outline" className="w-full" disabled={detail.isFetching} onClick={() => startEdit(invoice)}><Pencil aria-hidden="true" />Edit invoice</Button>
             {share &&<div role="group" aria-labelledby="invoice-send-heading" className="space-y-3 border-t border-border pt-4">
               <p id="invoice-send-heading" className="text-sm font-medium">Send to customer</p>
-              {canSharePdf && <>
-                <Button type="button" variant="outline" className="w-full" onClick={sharePdf}><Share2 aria-hidden="true" />{sharePdfFile.isFetching && !sharePdfFile.data ? 'Preparing PDF…' : 'Share PDF (WhatsApp, email…)'}</Button>
-                <p className="text-sm text-muted-foreground" aria-live="polite">{shareNote || 'Attaches the invoice PDF. Pick WhatsApp or your mail app, then the customer.'}</p>
-                <p className="pt-1 text-sm font-medium">Or send a link to the PDF</p>
-              </>}
-              <Button asChild variant="outline" className="w-full"><a href={share.whatsapp} target="_blank" rel="noopener noreferrer"><MessageCircle aria-hidden="true" />Send on WhatsApp</a></Button>
-              <Button asChild variant="outline" className="w-full"><a href={share.email}><Mail aria-hidden="true" />Send by email</a></Button>
+              <Button asChild variant="outline" className="w-full"><a href={share.whatsapp} target="_blank" rel="noopener noreferrer" onClick={() => sendWithPdf('whatsapp')}><MessageCircle aria-hidden="true" />Send on WhatsApp</a></Button>
+              <Button asChild variant="outline" className="w-full"><a href={share.email} onClick={() => sendWithPdf('email')}><Mail aria-hidden="true" />Send by email</a></Button>
+              <p className="text-sm text-muted-foreground" aria-live="polite">{shareNote || 'Opens a chat or email to the customer and downloads the PDF at the same time. Drag the PDF in to attach it.'}</p>
+              {canSharePdf && <Button type="button" variant="ghost" className="w-full" onClick={sharePdf}><Share2 aria-hidden="true" />{sharePdfFile.isFetching && !sharePdfFile.data ? 'Preparing PDF…' : 'Share PDF with another app'}</Button>}
               <Button type="button" variant="ghost" className="w-full" onClick={copyShareLink}>{copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}{copied ? 'Link copied' : 'Copy invoice link'}</Button>
               <p className="sr-only" role="status" aria-live="polite">{copied ? 'Invoice link copied' : ''}</p>
               {(!share.hasPhone || !share.hasEmail) && <p className="text-sm text-muted-foreground">

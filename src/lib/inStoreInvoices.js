@@ -67,6 +67,17 @@ export function shareInvoicePdf(invoice, pdf) {
   });
 }
 
+export function saveInvoicePdf(invoice, pdf) {
+  const url = URL.createObjectURL(pdf);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `${invoice.invoice_number}.pdf`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
 export async function openInvoicePdf(invoice, print = false) {
   // Open synchronously in the click handler so browsers do not block the print window.
   const printWindow = print ? window.open('', '_blank') : null;
@@ -99,13 +110,8 @@ export async function openInvoicePdf(invoice, print = false) {
       printWindow.document.body.replaceChildren(button, frame);
       printWindow.addEventListener('pagehide', () => URL.revokeObjectURL(url), { once: true });
     } else {
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = `${invoice.invoice_number}.pdf`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+      URL.revokeObjectURL(url);
+      saveInvoicePdf(invoice, pdf);
     }
   } catch (error) {
     printWindow?.close();
