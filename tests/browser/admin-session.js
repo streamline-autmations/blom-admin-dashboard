@@ -27,7 +27,7 @@ async page => {
   const product = { id: '22222222-2222-4222-8222-222222222222', name: 'Retention test acrylic', price: 125, sku: 'TEST-RETENTION' };
   await page.route('**/admin-in-store-invoices**', route => {
     if (route.request().method() !== 'GET') { writes++; return route.abort(); }
-    return route.fulfill({ json: { ok: true, data: route.request().url().includes('action=products') ? [product] : [], count: 0, banking_configured: false } });
+    return route.fulfill({ json: { ok: true, data: /action=(products|catalog)/.test(route.request().url()) ? [product] : [], count: 0, banking_configured: false } });
   });
   await page.goto('http://localhost:5182/analytics');
   await page.locator('#analytics-title').waitFor();
@@ -36,7 +36,7 @@ async page => {
   await page.locator('#invoice-phone').fill('0821234567');
   await page.locator('#invoice-email').fill('customer@example.invalid');
   await page.locator('#invoice-search').fill('acrylic');
-  await page.getByRole('button', { name: `Add ${product.name}`, exact: true }).click();
+  await page.getByRole('option', { name: product.name }).click();
   await page.getByRole('button', { name: `Increase ${product.name} quantity`, exact: true }).click();
   await page.getByRole('spinbutton', { name: `Quantity for ${product.name}` }).fill('2');
   // Preserve the exact input node, caret and focus, not only its restored value.

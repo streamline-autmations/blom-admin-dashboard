@@ -18,6 +18,34 @@ export async function invoiceRequest(params = '', options = {}) {
     ? response.blob() : response.json();
 }
 
+// WhatsApp needs the number in international form without "+": 082 123 4567 → 27821234567.
+// Anything that doesn't look like a phone number opens WhatsApp's contact picker instead.
+export function whatsappNumber(phone) {
+  let digits = String(phone || '').replace(/\D/g, '');
+  if (digits.startsWith('00')) digits = digits.slice(2);
+  else if (/^0\d{9}$/.test(digits)) digits = `27${digits.slice(1)}`;
+  return /^[1-9]\d{7,14}$/.test(digits) ? digits : '';
+}
+
+// Prefilled WhatsApp chat and email draft for a saved invoice. Staff press Send themselves.
+export function invoiceShareLinks(invoice, totalText, origin = window.location.origin) {
+  const url = `${origin}${invoice.share_path}`;
+  const firstName = String(invoice.customer_name || '').trim().split(/\s+/)[0];
+  const message = [
+    `Hi${firstName ? ` ${firstName}` : ''},`, '',
+    `Here is your BLOM Cosmetics invoice ${invoice.invoice_number} for ${totalText}:`, url, '',
+    `Please use ${invoice.invoice_number} as your payment reference when making payment.`, '',
+    'Thank you!',
+  ].join('\n');
+  const number = whatsappNumber(invoice.customer_phone);
+  const subject = `Your BLOM Cosmetics invoice ${invoice.invoice_number}`;
+  return {
+    url, hasPhone: !!number, hasEmail: !!String(invoice.customer_email || '').trim(),
+    whatsapp: `https://wa.me/${number}?text=${encodeURIComponent(message)}`,
+    email: `mailto:${encodeURIComponent(String(invoice.customer_email || '').trim()).replace(/%40/g, '@')}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(message)}`,
+  };
+}
+
 export async function openInvoicePdf(invoice, print = false) {
   // Open synchronously in the click handler so browsers do not block the print window.
   const printWindow = print ? window.open('', '_blank') : null;

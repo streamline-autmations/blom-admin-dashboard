@@ -34,6 +34,18 @@ async function load(entry) {
 const manual = await load('netlify/functions/admin-in-store-invoices.ts');
 const online = await load('netlify/functions/invoice-pdf.ts');
 const renderer = await load('netlify/functions/_lib/invoice-document.ts');
+const share = await load('netlify/functions/invoice-share.ts');
+const shareLib = await load('netlify/functions/_lib/in-store-invoice-share.ts');
+const client = await (async () => {
+  const result = await build({ entryPoints: ['src/lib/inStoreInvoices.js'], bundle: true, write: false, platform: 'node', format: 'esm',
+    plugins: [{ name: 'no-supabase', setup(builder) {
+      builder.onResolve({ filter: /^@\/lib\/supabase$/ }, () => ({ path: 'supabase', namespace: 'test' }));
+      builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({ contents: 'export const supabase = {};', loader: 'js' }));
+    } }] });
+  const file = join(dir, 'inStoreInvoices.mjs');
+  await writeFile(file, result.outputFiles[0].contents);
+  return import(pathToFileURL(file).href);
+})();
 const id = '11111111-1111-4111-8111-111111111111';
 const productId = '22222222-2222-4222-8222-222222222222';
 const bank = { bank_name: 'To be confirmed', account_holder: 'To be confirmed', account_number: 'To be confirmed', account_type: 'To be confirmed', branch_code: 'To be confirmed', is_placeholder: 'true' };
@@ -51,7 +63,7 @@ function mockDb({ role = 'staff', responses = {}, rpcResult = { data: id, error:
     from(table) {
       const call = { table, filters: [] }; calls.push(call);
       const result = () => table === 'profiles' ? { data: { app_role: role }, error: null }
-        : (typeof responses[table] === 'function' ? responses[table](call) : responses[table]) || { data: ['products', 'bundles', 'courses'].includes(table) ? [] : invoice, error: null };
+        : (typeof responses[table] === 'function' ? responses[table](call) : responses[table]) || { data: ['products', 'bundles', 'courses', 'invoice_only_items', 'price_tiers', 'tier_prices'].includes(table) ? [] : invoice, error: null };
       const query = {
         select(value) { call.select = value; return query; },
         eq(...args) { call.filters.push(['eq', ...args]); return query; },
@@ -195,7 +207,9 @@ test('validates requests, strips browser totals and uses the atomic snapshot RPC
   const response = await manual.handler(event('POST', {}, submission));
   assert.equal(response.statusCode, 201);
   const rpc = calls.find(call => call.rpc);
-  assert.equal(rpc.rpc, 'create_in_store_invoice');
+  assert.equal(rpc.rpc, 'create_in_store_invoice_with_shipping');
+  assert.equal(rpc.args.p_shipping_cents, 0);
+  assert.equal(rpc.args.p_price_tier, null);
   assert.equal(rpc.args.p_created_by, id);
   assert.equal(rpc.args.p_request_id, id);
   assert.equal(rpc.args.total, undefined);
@@ -433,4 +447,55 @@ test('editing maps a missing invoice to 404 and a changed price to 409', async (
   assert.equal((await manual.handler(event('PUT', {}, body))).statusCode, 404);
   mockDb({ rpcResult: { data: null, error: { code: 'P0001', message: 'An item price changed.' } } });
   assert.equal((await manual.handler(event('PUT', {}, body))).statusCode, 409);
+});
+
+const shareEvent = query => ({ httpMethod: 'GET', headers: {}, queryStringParameters: query });
+
+test('saved invoices carry a signed share link and the public link serves only that PDF', async () => {
+  mockDb();
+  const saved = JSON.parse((await manual.handler(event('GET', { id }))).body).invoice;
+  const [, , linkId, sig] = saved.share_path.split('/');
+  assert.equal(saved.share_path, `/invoice/${id}/${sig}`);
+  assert.equal(sig.length, 22);
+  // No session needed: the signature is the access check.
+  const calls = mockDb();
+  const response = await share.handler(shareEvent({ id: linkId, sig }));
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers['Content-Type'], 'application/pdf');
+  assert.match(response.headers['Cache-Control'], /no-store/);
+  assert.ok(Buffer.from(response.body, 'base64').subarray(0, 5).toString() === '%PDF-');
+  assert.ok(calls.some(call => call.table === 'in_store_invoices' && call.filters.some(filter => filter[0] === 'eq' && filter[2] === id)));
+});
+
+test('the public invoice link rejects forged, swapped or missing signatures before the database', async () => {
+  const calls = mockDb();
+  const sig = shareLib.invoiceShareSignature(id);
+  const flipped = sig.slice(0, -1) + (sig.endsWith('A') ? 'B' : 'A');
+  for (const query of [{ id, sig: flipped }, { id: productId, sig }, { id }, { id: 'nope', sig }, { id, sig: sig + 'x' }, {}]) {
+    const response = await share.handler(shareEvent(query));
+    assert.equal(response.statusCode, 404, JSON.stringify(query));
+    assert.match(response.headers['Content-Type'], /text\/html/);
+  }
+  assert.equal(calls.length, 0);
+  assert.equal((await share.handler({ ...shareEvent({ id, sig }), httpMethod: 'POST' })).statusCode, 405);
+  // A deleted invoice's link stops working.
+  mockDb({ responses: { in_store_invoices: { data: null, error: null } } });
+  assert.equal((await share.handler(shareEvent({ id, sig }))).statusCode, 404);
+});
+
+test('WhatsApp and email share links prefill the customer, invoice number, total and link', async () => {
+  for (const [input, expected] of [['082 123 4567', '27821234567'], ['+27 82 123 4567', '27821234567'], ['0027821234567', '27821234567'],
+    ['(082) 123-4567', '27821234567'], ['', ''], ['12345', ''], [null, '']]) assert.equal(client.whatsappNumber(input), expected, String(input));
+  const links = client.invoiceShareLinks({ ...invoice, share_path: '/invoice/abc/def', customer_name: 'Jane Smith', customer_phone: '082 000 0000' }, 'R 250.00', 'https://admin.example');
+  assert.equal(links.url, 'https://admin.example/invoice/abc/def');
+  assert.ok(links.whatsapp.startsWith('https://wa.me/27820000000?text='));
+  const text = decodeURIComponent(links.whatsapp.split('?text=')[1]);
+  for (const value of ['Hi Jane,', 'INV-20261005-001', 'R 250.00', 'https://admin.example/invoice/abc/def', 'payment reference']) assert.ok(text.includes(value), value);
+  assert.ok(links.email.startsWith('mailto:jane@example.com?subject='));
+  assert.ok(decodeURIComponent(links.email).includes('https://admin.example/invoice/abc/def'));
+  const bare = client.invoiceShareLinks({ ...invoice, share_path: '/x', customer_phone: '', customer_email: '' }, 'R 1.00', 'https://a');
+  assert.ok(bare.whatsapp.startsWith('https://wa.me/?text='));
+  assert.ok(bare.email.startsWith('mailto:?subject='));
+  assert.equal(bare.hasPhone, false);
+  assert.equal(bare.hasEmail, false);
 });

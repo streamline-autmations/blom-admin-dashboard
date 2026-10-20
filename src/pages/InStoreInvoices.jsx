@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, Download, FileText, Minus, Pencil, Plus, PlusCircle, Printer, Search, Trash2, Truck, X } from 'lucide-react';
+import { Check, Copy, Download, FileText, Mail, MessageCircle, Minus, Pencil, Plus, PlusCircle, Printer, Search, Trash2, Truck, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { moneyZAR, dateTime } from '@/components/formatUtils';
-import { invoiceRequest, openInvoicePdf } from '@/lib/inStoreInvoices';
+import { invoiceRequest, invoiceShareLinks, openInvoicePdf } from '@/lib/inStoreInvoices';
 import './InStoreInvoices.css';
 
 const money = value => moneyZAR(Math.round(Number(value) * 100));
@@ -52,6 +52,7 @@ export default function InStoreInvoices() {
   const [historyFilter, setHistoryFilter] = useState('');
   const [busy, setBusy] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [error, setError] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
@@ -304,6 +305,15 @@ export default function InStoreInvoices() {
     catch (failure) { setError(failure.message); }
     finally { setPdfBusy(false); }
   };
+  const share = invoice?.share_path ? invoiceShareLinks(invoice, money(invoice.total)) : null;
+  const copyShareLink = async () => {
+    setError('');
+    try {
+      await navigator.clipboard.writeText(share.url);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2500);
+    } catch { setError(`Could not copy automatically. The invoice link is: ${share.url}`); }
+  };
   const deleteInvoice = async record => {
     setDeleting(true);
     setError('');
@@ -486,6 +496,17 @@ export default function InStoreInvoices() {
             <Button type="button" disabled={pdfBusy} className="w-full" onClick={() => pdfAction(false)}><Download aria-hidden="true" />{pdfBusy ? 'Preparing PDF…' : 'Download PDF'}</Button>
             <Button type="button" variant="outline" disabled={pdfBusy} className="w-full" onClick={() => pdfAction(true)}><Printer aria-hidden="true" />Print Invoice</Button>
             <Button type="button" variant="outline" className="w-full" disabled={detail.isFetching} onClick={() => startEdit(invoice)}><Pencil aria-hidden="true" />Edit invoice</Button>
+            {share &&<div role="group" aria-labelledby="invoice-send-heading" className="space-y-3 border-t border-border pt-4">
+              <p id="invoice-send-heading" className="text-sm font-medium">Send to customer</p>
+              <Button asChild variant="outline" className="w-full"><a href={share.whatsapp} target="_blank" rel="noopener noreferrer"><MessageCircle aria-hidden="true" />Send on WhatsApp</a></Button>
+              <Button asChild variant="outline" className="w-full"><a href={share.email}><Mail aria-hidden="true" />Send by email</a></Button>
+              <Button type="button" variant="ghost" className="w-full" onClick={copyShareLink}>{copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}{copied ? 'Link copied' : 'Copy invoice link'}</Button>
+              <p className="sr-only" role="status" aria-live="polite">{copied ? 'Invoice link copied' : ''}</p>
+              {(!share.hasPhone || !share.hasEmail) && <p className="text-sm text-muted-foreground">
+                {!share.hasPhone && !share.hasEmail ? 'No phone number or email saved: you will choose the contact yourself.'
+                  : !share.hasPhone ? 'No valid phone number saved: WhatsApp will ask you to pick the contact.'
+                  : 'No email saved: add the address in your mail app.'}</p>}
+            </div>}
             <p className="break-words text-sm text-muted-foreground">Please use {invoice.invoice_number} as your payment reference when making payment.</p>
           </div> : <div className="space-y-3"><Button type="submit" disabled={busy || customBusy || !items.length || (shipping.open && shipping.amount !== '' && !shippingValid) || (!editing && (catalog.isPlaceholderData || catalog.isError))} className="w-full"><FileText aria-hidden="true" />{busy ? 'Saving…' : editing ? 'Save changes' : 'Generate Invoice'}</Button>
             {editing && <Button type="button" variant="outline" className="w-full" disabled={busy} onClick={cancelEdit}>Cancel</Button>}</div>}

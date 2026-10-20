@@ -43,6 +43,8 @@ async page => {
     const url = route.request().url();
     if (!url.split('?')[0].endsWith('admin-in-store-invoices')) return route.fulfill({ json: { ok: true, data: [], counts: {} } });
     const params = paramsFor(url);
+    // The page loads the whole catalog once and searches it in the browser.
+    if (params.action === 'catalog') return route.fulfill({ json: { data: catalog, tiers: [] } });
     if (params.action === 'products') return route.fulfill({ json: { data: catalog.filter(item => item.name.toLowerCase().includes((params.q || '').toLowerCase())) } });
     if (params.action === 'pdf') {
       return route.fulfill({ contentType: 'application/pdf', body: pdf });
@@ -55,7 +57,7 @@ async page => {
         if (!source) throw new Error('Incorrect catalog identity submitted');
         return { ...line, position: index + 1, product_name: source.name, unit_price: source.price, line_total: source.price * line.quantity };
       });
-      saved = { id: '44444444-4444-4444-8444-444444444444', invoice_number: 'INV-20261005-001', created_at: '2026-10-05T09:00:00Z', ...body, banking_details: { is_placeholder: 'true' }, in_store_invoice_items: lines, total: lines.reduce((sum, item) => sum + item.line_total, 0) };
+      saved = { id: '44444444-4444-4444-8444-444444444444', invoice_number: 'INV-20261005-001', created_at: '2026-10-05T09:00:00Z', ...body, banking_details: { is_placeholder: 'true' }, share_path: '/invoice/44444444-4444-4444-8444-444444444444/signed', in_store_invoice_items: lines, total: lines.reduce((sum, item) => sum + item.line_total, 0) };
       return route.fulfill({ status: 201, json: { invoice: saved } });
     }
     if (params.id) return route.fulfill({ json: { invoice: saved } });
@@ -68,10 +70,10 @@ async page => {
   await page.locator('#invoice-name').waitFor();
   assert(!(await page.locator('details').last().getAttribute('open')), 'history starts compact and collapsed');
   await page.locator('#invoice-search').fill('BASE-15');
-  await page.getByText('No items found. Try another name.').waitFor();
+  await page.getByText('No items found. Try another name').waitFor();
   assert(true, 'SKU-only query does not match product names');
   await page.locator('#invoice-search').fill('BLOM');
-  for (const item of catalog) await page.getByRole('button', { name: `Add ${item.name}`, exact: true }).click();
+  for (const item of catalog) await page.getByRole('option', { name: item.name }).click();
   assert(await page.getByRole('spinbutton').count() === 4, 'product, bundle and two course packages have independent lines');
   await page.getByRole('button', { name: `Increase ${catalog[0].name} quantity`, exact: true }).click();
   assert(await page.getByRole('spinbutton', { name: `Quantity for ${catalog[0].name}` }).inputValue() === '2', 'plus quantity control increments once');
@@ -96,6 +98,10 @@ async page => {
   await page.getByRole('button', { name: 'Generate Invoice', exact: true }).click();
   await page.getByRole('heading', { name: 'INV-20261005-001', exact: true }).waitFor();
   assert(posts === 1, 'one mixed invoice submission');
+  const whatsapp = await page.getByRole('link', { name: 'Send on WhatsApp' }).getAttribute('href');
+  assert(whatsapp.startsWith('https://wa.me/27820000000?text='), 'WhatsApp opens a chat with the customer in international format');
+  assert(decodeURIComponent(whatsapp).includes('http://localhost:5182/invoice/44444444-4444-4444-8444-444444444444/signed'), 'WhatsApp message carries the signed invoice link');
+  assert((await page.getByRole('link', { name: 'Send by email' }).getAttribute('href')).startsWith('mailto:jane@example.invalid?subject='), 'email draft is addressed to the customer');
   const details = page.locator('details').last();
   assert(await details.getAttribute('open') !== null, 'saving expands invoice history');
   assert(await details.locator('li').count() === 5, 'large history displays only five rows');
