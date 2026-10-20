@@ -65,7 +65,7 @@ async page => {
         if (!source) throw new Error('Incorrect catalog identity submitted');
         return { ...line, position: index + 1, product_name: source.name, unit_price: source.price, line_total: source.price * line.quantity };
       });
-      saved = { id: '44444444-4444-4444-8444-444444444444', invoice_number: 'INV-20261005-001', created_at: '2026-10-05T09:00:00Z', ...body, banking_details: { is_placeholder: 'true' }, share_path: '/invoice/44444444-4444-4444-8444-444444444444/signed', in_store_invoice_items: lines, total: lines.reduce((sum, item) => sum + item.line_total, 0) };
+      saved = { id: '44444444-4444-4444-8444-444444444444', invoice_number: 'INV-20261005-001', created_at: '2026-10-05T09:00:00Z', ...body, banking_details: { is_placeholder: 'true' }, in_store_invoice_items: lines, total: lines.reduce((sum, item) => sum + item.line_total, 0) };
       return route.fulfill({ status: 201, json: { invoice: saved } });
     }
     if (params.id) return route.fulfill({ json: { invoice: saved } });
@@ -106,22 +106,7 @@ async page => {
   await page.getByRole('button', { name: 'Generate Invoice', exact: true }).click();
   await page.getByRole('heading', { name: 'INV-20261005-001', exact: true }).waitFor();
   assert(posts === 1, 'one mixed invoice submission');
-  const whatsapp = await page.getByRole('link', { name: 'Send on WhatsApp' }).getAttribute('href');
-  assert(whatsapp.startsWith('https://wa.me/27820000000?text='), 'WhatsApp opens a chat with the customer in international format');
-  assert(decodeURIComponent(whatsapp).includes('http://localhost:5182/invoice/44444444-4444-4444-8444-444444444444/signed'), 'WhatsApp message carries the signed invoice link');
-  assert((await page.getByRole('link', { name: 'Send by email' }).getAttribute('href')).startsWith('mailto:jane@example.invalid?subject='), 'email draft is addressed to the customer');
-  const sendDownload = page.waitForEvent('download');
-  const chatPopup = page.waitForEvent('popup');
-  const chatRequest = page.context().waitForEvent('request', request => request.url().startsWith('https://wa.me/'));
-  await page.getByRole('link', { name: 'Send on WhatsApp' }).click();
-  const [chatDownload, chat] = await Promise.all([sendDownload, chatPopup]);
-  assert(chatDownload.suggestedFilename() === 'INV-20261005-001.pdf', 'Send on WhatsApp downloads the invoice PDF while opening the chat');
-  // External URLs are blocked in this harness, so check the request the new tab made.
-  assert((await chatRequest).url().startsWith('https://wa.me/27820000000?text='), 'Send on WhatsApp opens the customer chat');
-  await chat.close();
-  await page.getByText('INV-20261005-001.pdf downloaded. Drag it into the WhatsApp chat').waitFor();
-  assert(true, 'staff are told to drag the downloaded PDF into the chat');
-  await page.getByRole('button', { name: 'Share PDF with another app' }).click();
+  await page.getByRole('button', { name: 'Share PDF', exact: true }).click();
   await page.waitForFunction(() => window.__shared.length === 1);
   const [shared] = await page.evaluate(() => window.__shared);
   assert(shared.files.length === 1 && shared.files[0].name === 'INV-20261005-001.pdf' && shared.files[0].type === 'application/pdf' && shared.files[0].head === '%PDF-', 'Share PDF hands the actual invoice PDF to the share menu');

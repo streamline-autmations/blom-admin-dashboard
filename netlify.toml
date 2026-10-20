@@ -43,13 +43,6 @@
   status = 301
   force = true
 
-# Signed customer link to an in-store invoice PDF (sent on WhatsApp / by email)
-[[redirects]]
-  from = "/invoice/:id/:sig"
-  to = "/.netlify/functions/invoice-share?id=:id&sig=:sig"
-  status = 200
-  force = true
-
 # Catch-all admin redirect (must come after specific redirects)
 [[redirects]]
   from = "/admin/*"

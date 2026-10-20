@@ -18,34 +18,6 @@ export async function invoiceRequest(params = '', options = {}) {
     ? response.blob() : response.json();
 }
 
-// WhatsApp needs the number in international form without "+": 082 123 4567 → 27821234567.
-// Anything that doesn't look like a phone number opens WhatsApp's contact picker instead.
-export function whatsappNumber(phone) {
-  let digits = String(phone || '').replace(/\D/g, '');
-  if (digits.startsWith('00')) digits = digits.slice(2);
-  else if (/^0\d{9}$/.test(digits)) digits = `27${digits.slice(1)}`;
-  return /^[1-9]\d{7,14}$/.test(digits) ? digits : '';
-}
-
-// Prefilled WhatsApp chat and email draft for a saved invoice. Staff press Send themselves.
-export function invoiceShareLinks(invoice, totalText, origin = window.location.origin) {
-  const url = `${origin}${invoice.share_path}`;
-  const firstName = String(invoice.customer_name || '').trim().split(/\s+/)[0];
-  const message = [
-    `Hi${firstName ? ` ${firstName}` : ''},`, '',
-    `Here is your BLOM Cosmetics invoice ${invoice.invoice_number} for ${totalText}:`, url, '',
-    `Please use ${invoice.invoice_number} as your payment reference when making payment.`, '',
-    'Thank you!',
-  ].join('\n');
-  const number = whatsappNumber(invoice.customer_phone);
-  const subject = `Your BLOM Cosmetics invoice ${invoice.invoice_number}`;
-  return {
-    url, hasPhone: !!number, hasEmail: !!String(invoice.customer_email || '').trim(),
-    whatsapp: `https://wa.me/${number}?text=${encodeURIComponent(message)}`,
-    email: `mailto:${encodeURIComponent(String(invoice.customer_email || '').trim()).replace(/%40/g, '@')}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(message)}`,
-  };
-}
-
 // The system share menu (Windows share, Android/iOS share sheet) is the only way a web page can
 // hand WhatsApp or a mail app the actual PDF file. Firefox and Linux browsers can't share files.
 export function canSharePdfFiles() {
@@ -65,17 +37,6 @@ export function shareInvoicePdf(invoice, pdf) {
     files: [file], title: `Invoice ${invoice.invoice_number}`,
     text: `Your BLOM Cosmetics invoice ${invoice.invoice_number}. Please use ${invoice.invoice_number} as your payment reference when making payment.`,
   });
-}
-
-export function saveInvoicePdf(invoice, pdf) {
-  const url = URL.createObjectURL(pdf);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = `${invoice.invoice_number}.pdf`;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 export async function openInvoicePdf(invoice, print = false) {
@@ -110,8 +71,13 @@ export async function openInvoicePdf(invoice, print = false) {
       printWindow.document.body.replaceChildren(button, frame);
       printWindow.addEventListener('pagehide', () => URL.revokeObjectURL(url), { once: true });
     } else {
-      URL.revokeObjectURL(url);
-      saveInvoicePdf(invoice, pdf);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `${invoice.invoice_number}.pdf`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 60000);
     }
   } catch (error) {
     printWindow?.close();

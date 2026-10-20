@@ -2,7 +2,7 @@ import type { Handler } from "@netlify/functions";
 import { createClient } from "@supabase/supabase-js";
 import { randomUUID } from "crypto";
 import { requireAdminUser } from "./_lib/require-admin-user";
-import { invoiceSharePath, renderInStoreInvoicePdf } from "./_lib/in-store-invoice-share";
+import { generateInvoiceDocument } from "./_lib/invoice-document";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const headers = { "Content-Type": "application/json", "Cache-Control": "no-store" };
@@ -243,7 +243,9 @@ export const handler: Handler = async event => {
       if (!invoice) return json(404, { error: "Invoice not found" });
       invoice.in_store_invoice_items.sort((a, b) => a.position - b.position);
       if (event.httpMethod === "GET" && query.action === "pdf") {
-        const bytes = await renderInStoreInvoicePdf(invoice);
+        const bytes = await generateInvoiceDocument({ ...invoice, shipping_cents: Math.round(Number(invoice.shipping || 0) * 100) },
+          invoice.in_store_invoice_items.map(item => ({ ...item, name: item.product_name })),
+          invoice.invoice_number, null, invoice.banking_details);
         return {
           statusCode: 200,
           headers: {
@@ -253,8 +255,7 @@ export const handler: Handler = async event => {
           body: Buffer.from(bytes).toString("base64"), isBase64Encoded: true,
         };
       }
-      // share_path is the signed customer link the WhatsApp / email buttons send.
-      return json(event.httpMethod === "POST" ? 201 : 200, { invoice: { ...invoice, share_path: invoiceSharePath(invoice.id) } });
+      return json(event.httpMethod === "POST" ? 201 : 200, { invoice });
     }
 
     const page = Math.max(1, Math.min(100000, Number.parseInt(query.page || "1", 10) || 1));
@@ -269,10 +270,7 @@ export const handler: Handler = async event => {
     }
     const { data, error, count } = await historyQuery.range((page - 1) * pageSize, page * pageSize - 1);
     if (error) throw error;
-    for (const record of data || []) {
-      record.in_store_invoice_items?.sort((a, b) => a.position - b.position);
-      record.share_path = invoiceSharePath(record.id);
-    }
+    for (const record of data || []) record.in_store_invoice_items?.sort((a, b) => a.position - b.position);
     return json(200, { data, count, page_size: pageSize, banking_configured: bankingDetails().is_placeholder !== "true" });
   } catch (error) {
     console.error("In-store invoice request failed:", error instanceof Error ? error.message : error);
