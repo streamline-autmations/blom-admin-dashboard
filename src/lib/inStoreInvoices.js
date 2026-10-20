@@ -46,6 +46,27 @@ export function invoiceShareLinks(invoice, totalText, origin = window.location.o
   };
 }
 
+// The system share menu (Windows share, Android/iOS share sheet) is the only way a web page can
+// hand WhatsApp or a mail app the actual PDF file. Firefox and Linux browsers can't share files.
+export function canSharePdfFiles() {
+  try {
+    return typeof navigator !== 'undefined' && typeof navigator.share === 'function' && typeof navigator.canShare === 'function'
+      && navigator.canShare({ files: [new File(['%PDF-'], 'invoice.pdf', { type: 'application/pdf' })] });
+  } catch { return false; }
+}
+
+export const fetchInvoicePdf = invoice => invoiceRequest(`?action=pdf&id=${encodeURIComponent(invoice.id)}`);
+
+// Must run straight from a click: browsers only open the share menu within a few seconds of one,
+// which is why the page fetches the PDF in advance.
+export function shareInvoicePdf(invoice, pdf) {
+  const file = new File([pdf], `${invoice.invoice_number}.pdf`, { type: 'application/pdf' });
+  return navigator.share({
+    files: [file], title: `Invoice ${invoice.invoice_number}`,
+    text: `Your BLOM Cosmetics invoice ${invoice.invoice_number}. Please use ${invoice.invoice_number} as your payment reference when making payment.`,
+  });
+}
+
 export async function openInvoicePdf(invoice, print = false) {
   // Open synchronously in the click handler so browsers do not block the print window.
   const printWindow = print ? window.open('', '_blank') : null;
@@ -56,7 +77,7 @@ export async function openInvoicePdf(invoice, print = false) {
     printWindow.opener = null;
   }
   try {
-    const pdf = await invoiceRequest(`?action=pdf&id=${encodeURIComponent(invoice.id)}`);
+    const pdf = await fetchInvoicePdf(invoice);
     const url = URL.createObjectURL(pdf);
     if (printWindow) {
       if (printWindow.closed) { URL.revokeObjectURL(url); return; }

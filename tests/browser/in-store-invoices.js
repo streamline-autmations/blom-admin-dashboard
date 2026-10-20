@@ -5,6 +5,14 @@ async page => {
   await page.addInitScript(({ user }) => {
     localStorage.setItem('blom-admin-auth', JSON.stringify({ access_token: 'synthetic-test-session', refresh_token: 'synthetic-refresh', token_type: 'bearer', expires_at: 4102444800, user }));
   }, { user });
+  // Stand-in for the Windows / phone share menu: records what the page hands to WhatsApp or Mail.
+  await page.addInitScript(() => {
+    window.__shared = [];
+    navigator.canShare = data => !!data?.files?.every(file => file.type === 'application/pdf');
+    navigator.share = async data => {
+      window.__shared.push({ title: data.title, text: data.text, files: await Promise.all(data.files.map(async file => ({ name: file.name, type: file.type, head: await file.slice(0, 5).text() }))) });
+    };
+  });
   await page.route('**/*', route => {
     const url = route.request().url();
     return url.startsWith('http://localhost:5182/') || url.startsWith('https://example.invalid/') || url.startsWith('blob:') ? route.continue() : route.abort();
@@ -102,6 +110,11 @@ async page => {
   assert(whatsapp.startsWith('https://wa.me/27820000000?text='), 'WhatsApp opens a chat with the customer in international format');
   assert(decodeURIComponent(whatsapp).includes('http://localhost:5182/invoice/44444444-4444-4444-8444-444444444444/signed'), 'WhatsApp message carries the signed invoice link');
   assert((await page.getByRole('link', { name: 'Send by email' }).getAttribute('href')).startsWith('mailto:jane@example.invalid?subject='), 'email draft is addressed to the customer');
+  await page.getByRole('button', { name: 'Share PDF (WhatsApp, email…)' }).click();
+  await page.waitForFunction(() => window.__shared.length === 1);
+  const [shared] = await page.evaluate(() => window.__shared);
+  assert(shared.files.length === 1 && shared.files[0].name === 'INV-20261005-001.pdf' && shared.files[0].type === 'application/pdf' && shared.files[0].head === '%PDF-', 'Share PDF hands the actual invoice PDF to the share menu');
+  assert(shared.text.includes('INV-20261005-001') && shared.title === 'Invoice INV-20261005-001', 'shared PDF carries the invoice number and payment reference');
   const details = page.locator('details').last();
   assert(await details.getAttribute('open') !== null, 'saving expands invoice history');
   assert(await details.locator('li').count() === 5, 'large history displays only five rows');

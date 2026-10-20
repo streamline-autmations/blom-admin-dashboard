@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, Copy, Download, FileText, Mail, MessageCircle, Minus, Pencil, Plus, PlusCircle, Printer, Search, Trash2, Truck, X } from 'lucide-react';
+import { Check, Copy, Download, FileText, Mail, MessageCircle, Minus, Pencil, Plus, PlusCircle, Printer, Search, Share2, Trash2, Truck, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { moneyZAR, dateTime } from '@/components/formatUtils';
-import { invoiceRequest, invoiceShareLinks, openInvoicePdf } from '@/lib/inStoreInvoices';
+import { canSharePdfFiles, fetchInvoicePdf, invoiceRequest, invoiceShareLinks, openInvoicePdf, shareInvoicePdf } from '@/lib/inStoreInvoices';
 import './InStoreInvoices.css';
 
 const money = value => moneyZAR(Math.round(Number(value) * 100));
@@ -53,6 +53,7 @@ export default function InStoreInvoices() {
   const [busy, setBusy] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [shareNote, setShareNote] = useState('');
   const [error, setError] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
@@ -78,7 +79,7 @@ export default function InStoreInvoices() {
   // Any route change (opening, leaving or deleting an invoice) starts from a clean form, so an
   // edit in progress can never be saved against a different or deleted invoice.
   useEffect(() => {
-    setSaved(null); setItems([]); setTier(''); pricedFor.current = ''; setSearch(''); setLastAdded(''); setError(''); setCustom(null); setShipping(emptyShipping); setEditing(null);
+    setSaved(null); setItems([]); setTier(''); pricedFor.current = ''; setSearch(''); setLastAdded(''); setError(''); setCustom(null); setShipping(emptyShipping); setEditing(null); setShareNote('');
     setCustomer({ customer_name: '', customer_phone: '', customer_email: '' });
     requestId.current = null; submission.current = null;
   }, [id]);
@@ -146,6 +147,14 @@ export default function InStoreInvoices() {
   const shippingLabel = invoice ? invoice.shipping_label : shipping.label.trim();
   const total = invoice ? Number(invoice.total) : subtotal + (shippingValid ? shippingAmount : 0);
   const currentCustomer = invoice || customer;
+  // Fetched as soon as an invoice is shown, so "Share PDF" can open the share menu on the click itself.
+  const canSharePdf = useMemo(() => canSharePdfFiles(), []);
+  const sharePdfFile = useQuery({
+    queryKey: ['inStoreInvoicePdf', invoice?.id, invoice?.updated_at || invoice?.created_at],
+    queryFn: () => fetchInvoicePdf(invoice),
+    enabled: canSharePdf && !!invoice?.id,
+    staleTime: Infinity, gcTime: 5 * 60_000, retry: 1,
+  });
 
   const quantities = new Map(items.map(item => [itemKey(item), item.quantity]));
   const addProduct = product => {
@@ -314,6 +323,23 @@ export default function InStoreInvoices() {
       window.setTimeout(() => setCopied(false), 2500);
     } catch { setError(`Could not copy automatically. The invoice link is: ${share.url}`); }
   };
+  const sharePdf = async () => {
+    setError(''); setShareNote('');
+    try {
+      let pdf = sharePdfFile.data;
+      if (!pdf) {
+        const result = await sharePdfFile.refetch();
+        if (result.error) throw result.error;
+        pdf = result.data;
+      }
+      await shareInvoicePdf(invoice, pdf);
+    } catch (failure) {
+      if (failure?.name === 'AbortError') return; // share menu closed without picking an app
+      // The PDF took too long and the browser no longer counts this as part of the click.
+      if (failure?.name === 'NotAllowedError') { setShareNote('The PDF is ready now. Click Share PDF again.'); return; }
+      setError(failure?.message || 'Could not share this invoice. Download the PDF instead.');
+    }
+  };
   const deleteInvoice = async record => {
     setDeleting(true);
     setError('');
@@ -329,7 +355,7 @@ export default function InStoreInvoices() {
     finally { setDeleting(false); }
   };
   const newInvoice = () => {
-    setSaved(null); setItems([]); setTier(''); pricedFor.current = ''; setSearch(''); setLastAdded(''); setError(''); setCustom(null); setShipping(emptyShipping); setEditing(null);
+    setSaved(null); setItems([]); setTier(''); pricedFor.current = ''; setSearch(''); setLastAdded(''); setError(''); setCustom(null); setShipping(emptyShipping); setEditing(null); setShareNote('');
     setCustomer({ customer_name: '', customer_phone: '', customer_email: '' });
     requestId.current = null; submission.current = null;
   };
@@ -498,6 +524,11 @@ export default function InStoreInvoices() {
             <Button type="button" variant="outline" className="w-full" disabled={detail.isFetching} onClick={() => startEdit(invoice)}><Pencil aria-hidden="true" />Edit invoice</Button>
             {share &&<div role="group" aria-labelledby="invoice-send-heading" className="space-y-3 border-t border-border pt-4">
               <p id="invoice-send-heading" className="text-sm font-medium">Send to customer</p>
+              {canSharePdf && <>
+                <Button type="button" variant="outline" className="w-full" onClick={sharePdf}><Share2 aria-hidden="true" />{sharePdfFile.isFetching && !sharePdfFile.data ? 'Preparing PDF…' : 'Share PDF (WhatsApp, email…)'}</Button>
+                <p className="text-sm text-muted-foreground" aria-live="polite">{shareNote || 'Attaches the invoice PDF. Pick WhatsApp or your mail app, then the customer.'}</p>
+                <p className="pt-1 text-sm font-medium">Or send a link to the PDF</p>
+              </>}
               <Button asChild variant="outline" className="w-full"><a href={share.whatsapp} target="_blank" rel="noopener noreferrer"><MessageCircle aria-hidden="true" />Send on WhatsApp</a></Button>
               <Button asChild variant="outline" className="w-full"><a href={share.email}><Mail aria-hidden="true" />Send by email</a></Button>
               <Button type="button" variant="ghost" className="w-full" onClick={copyShareLink}>{copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}{copied ? 'Link copied' : 'Copy invoice link'}</Button>
