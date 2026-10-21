@@ -6,12 +6,12 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell, TableCaption } from '@/components/ui/table';
-import { moneyZAR } from '@/components/formatUtils';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import './Analytics.css';
 
 const presets = [['today', 'Today'], ['month', 'This month'], ['30', 'Last 30 days'], ['lifetime', 'Lifetime']];
-const count = value => new Intl.NumberFormat('en-ZA', { maximumFractionDigits: 1 }).format(value || 0);
+const count = value => new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 }).format(value || 0);
+const moneyZAR = cents => `R ${new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format((typeof cents === 'number' ? cents : 0) / 100)}`;
 const dateLabel = (value, monthly = false) => new Date(`${value}T12:00:00+02:00`).toLocaleDateString('en-ZA', monthly ? { month: 'short', year: 'numeric' } : { day: 'numeric', month: 'short', year: 'numeric' });
 function presetDates(preset) {
   const localNow = new Date(Date.now() + 2 * 3600000);
