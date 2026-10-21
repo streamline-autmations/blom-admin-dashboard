@@ -17,6 +17,7 @@ const maxResults = 40;
 const emptyCustom = { id: null, name: '', price: '' };
 const emptyShipping = { open: false, label: '', amount: '' };
 const maxShipping = 10000;
+const courierDefault = (slug, name) => (/mentor/i.test(`${slug || ''} ${name || ''}`) ? '75' : '150');
 
 // Every typed word must appear in the name; names starting with the search rank first.
 function searchCatalog(catalog, search) {
@@ -474,7 +475,7 @@ export default function InStoreInvoices() {
             {readOnly ? <p className="mt-2 text-base">{invoice.price_tier_name}</p> : editing ? <p className="mt-2 text-base">{editing.price_tier_name} <span className="text-sm text-muted-foreground">(fixed for this invoice)</span></p> : <div className="mt-2 flex flex-wrap gap-2">
               {[{ slug: '', name: 'Retail' }, ...tiers].map(row => <Button key={row.slug || 'retail'} type="button" disabled={busy}
                 variant={tier === row.slug ? 'default' : 'outline'} aria-pressed={tier === row.slug} className="h-11"
-                onClick={() => setTier(row.slug)}>{row.name}</Button>)}
+                onClick={() => { setShipping(previous => previous.open && previous.amount === courierDefault(tier, tierName) ? { ...previous, amount: courierDefault(row.slug, row.name) } : previous); setTier(row.slug); }}>{row.name}</Button>)}
             </div>}
             {!readOnly && catalog.isError && <p role="alert" className="mt-2 text-sm">Could not load this price list. {catalog.error.message}
               <Button type="button" variant="ghost" onClick={() => catalog.refetch()}>Retry</Button></p>}
@@ -494,12 +495,12 @@ export default function InStoreInvoices() {
                 <Input id="shipping-amount" className="mt-2 h-11 tabular-nums" type="number" min={0} max={maxShipping} step="0.01" inputMode="decimal" disabled={busy} value={shipping.amount} placeholder="0.00"
                   onChange={event => setShipping(previous => ({ ...previous, amount: event.target.value }))} /></div>
               <div><Label htmlFor="shipping-label">Label <span className="font-normal text-muted-foreground">(optional)</span></Label>
-                <Input id="shipping-label" className="mt-2 h-11" maxLength={60} disabled={busy} value={shipping.label} placeholder="Shipping & Handling"
+                <Input id="shipping-label" className="mt-2 h-11" maxLength={60} disabled={busy} value={shipping.label} placeholder="Courier"
                   onChange={event => setShipping(previous => ({ ...previous, label: event.target.value }))} /></div>
               {shipping.amount !== '' && !shippingValid && <p role="alert" className="text-sm font-medium">Enter an amount between R0 and R10 000.</p>}
             </div>
-            : <Button type="button" variant="outline" className="h-11 w-full justify-start" disabled={busy}
-              onClick={() => setShipping({ ...emptyShipping, open: true })}><Truck aria-hidden="true" />Add shipping or courier cost</Button>)}
+            : <Button type="button" className="h-11 w-full justify-start" disabled={busy}
+              onClick={() => setShipping({ open: true, label: 'Courier', amount: courierDefault(tier, tierName) })}><Truck aria-hidden="true" />Add shipping or courier cost</Button>)}
           <dl aria-live="polite" className="space-y-3 border-t border-border pt-5 tabular-nums">
             {shippingAmount > 0 && shippingValid && <>
               <div className="flex justify-between gap-3 text-base"><dt>Subtotal</dt><dd>{money(subtotal)}</dd></div>
