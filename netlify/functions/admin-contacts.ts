@@ -6,21 +6,35 @@ const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SE
 
 const baseHandler: Handler = async (event) => {
   try {
-    // Fetch from the CORRECT 'contacts' table
-    const { data, error } = await supabase
-      .from('contacts')
-      .select('*')
-      .order('created_at', { ascending: false });
+    // Fetch from the CORRECT 'contacts' table.
+    // PostgREST caps a single response at 1000 rows, so page through with
+    // .range() until a page comes back short of a full page.
+    const PAGE_SIZE = 1000;
+    let all: any[] = [];
+    let from = 0;
 
-    if (error) throw error;
+    while (true) {
+      const { data, error } = await supabase
+        .from('contacts')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .range(from, from + PAGE_SIZE - 1);
+
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+
+      all = all.concat(data);
+      if (data.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
 
     return {
       statusCode: 200,
-      headers: { 
+      headers: {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*'
       },
-      body: JSON.stringify(data)
+      body: JSON.stringify(all)
     };
   } catch (e: any) {
     console.error("Fetch Contacts Error:", e);
