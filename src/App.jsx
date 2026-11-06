@@ -76,6 +76,7 @@ import CourseBookings from '@/pages/CourseBookings'
 import CourseBookingDetail from '@/pages/CourseBookingDetail'
 import PriceUpdates from '@/pages/PriceUpdates'
 import Specials from '@/pages/Specials'
+import LuckyPetal from '@/pages/LuckyPetal'
 import Featured from '@/pages/Featured'
 import FixImages from '@/pages/FixImages'
 import SeedNotifications from '@/pages/SeedNotifications'
@@ -186,6 +187,9 @@ const AuthenticatedApp = () => {
         <Route path="/specials" element={<Specials />} />
         <Route path="/specials/new" element={<Specials />} />
         <Route path="/specials/:id" element={<Specials />} />
+
+        {/* Black Friday Lucky Petal */}
+        <Route path="/lucky-petal" element={<LuckyPetal />} />
 
         {/* Featured - Canonical Routes */}
         <Route path="/featured" element={<Featured />} />
