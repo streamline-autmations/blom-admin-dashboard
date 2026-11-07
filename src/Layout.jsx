@@ -6,6 +6,7 @@ import { createPageUrl } from "@/utils";
 import { ToastProvider } from "./components/ui/ToastProvider";
 import { useNotifications } from "@/contexts/NotificationContext";
 import {
+  Flower2,
   // Replaced Home
   Package,
   Layers,
@@ -60,7 +61,8 @@ const navigationGroups = [
       { name: "Reviews", url: "Reviews", icon: Star },
       { name: "Messages", url: "Messages", icon: MessageSquare },
       { name: "Contacts", url: "Contacts", icon: Users },
-      { name: "Affiliates", url: "affiliates", icon: Handshake }
+      { name: "Affiliates", url: "affiliates", icon: Handshake },
+      { name: "Lucky Petal", url: "lucky-petal", icon: Flower2 }
     ]
   },
   {
