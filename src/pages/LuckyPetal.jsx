@@ -398,7 +398,7 @@ function PrizeRow({ prize, totalWeight, products, productName, onSaved, onError 
         <Field label="Title" wide><input className="form-input w-full" value={form.title} onChange={set('title')} /></Field>
         <Field label="Colour">
           <select className="select w-full" value={form.tone} onChange={set('tone')}>
-            {['pink', 'blush', 'blue', 'white', 'gold'].map((t) => <option key={t} value={t}>{t}</option>)}
+            {['pink', 'white', 'ink', 'gold', 'blush', 'blue'].map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
         </Field>
         <Field label="Type">
