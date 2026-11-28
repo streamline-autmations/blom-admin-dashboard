@@ -17,6 +17,7 @@ const maxResults = 40;
 const emptyCustom = { id: null, name: '', price: '' };
 const emptyShipping = { open: false, label: '', amount: '' };
 const maxShipping = 10000;
+const maxLines = 300; // keep in step with admin-in-store-invoices.ts and the invoice RPCs
 const courierDefault = (slug, name) => (/mentor/i.test(`${slug || ''} ${name || ''}`) ? '75' : '150');
 
 // Every typed word must appear in the name; names starting with the search rank first.
@@ -158,12 +159,12 @@ export default function InStoreInvoices() {
 
   const quantities = new Map(items.map(item => [itemKey(item), item.quantity]));
   const addProduct = product => {
-    if (items.length >= 100 && !quantities.has(itemKey(product))) return;
+    if (items.length >= maxLines && !quantities.has(itemKey(product))) return;
     setLastAdded(`Added ${product.name}`);
     setItems(previous => {
       const existing = previous.find(item => itemKey(item) === itemKey(product));
       if (existing) return previous.map(item => item === existing ? { ...item, quantity: Math.min(9999, item.quantity + 1) } : item);
-      if (previous.length >= 100) return previous;
+      if (previous.length >= maxLines) return previous;
       return [...previous, { product_id: product.id, product_name: product.name, item_type: product.item_type || 'product',
         course_package_index: product.course_package_index ?? null,
         price_cents: Math.round(Number(product.price) * 100), quantity: 1 }];
@@ -197,7 +198,7 @@ export default function InStoreInvoices() {
           return previous.map(line => itemKey(line) === key ? { ...line, product_name: item.name, price_cents: priceCents,
             quantity: custom.id ? line.quantity : Math.min(9999, line.quantity + 1) } : line);
         }
-        if (custom.id || previous.length >= 100) return previous;
+        if (custom.id || previous.length >= maxLines) return previous;
         return [...previous, { product_id: item.id, product_name: item.name, item_type: 'extra', course_package_index: null, price_cents: priceCents, quantity: 1 }];
       });
       setLastAdded(custom.id ? `Saved ${item.name}` : `Added ${item.name}`);
@@ -381,13 +382,14 @@ export default function InStoreInvoices() {
                 aria-activedescendant={results.length ? `invoice-result-${activeResult}` : undefined} />
             </div>
             <p className="sr-only" role="status" aria-live="polite">{lastAdded}</p>
+            {items.length >= maxLines && <p role="status" className="mt-2 text-sm font-medium">This invoice has the maximum of {maxLines} different items. You can still change quantities, or start a second invoice for the rest.</p>}
             {search.trim() && !custom && <div ref={resultsRef} id="invoice-search-results" role="listbox" aria-label="Search results"
               className="invoice-search-results mt-2 max-h-[22rem] overflow-y-auto rounded-md">
               {catalog.isPending ? <p role="status" className="p-4 text-base">Loading products…</p>
                 : catalog.isError ? <div role="alert" className="p-4 text-base">{catalog.error.message}<Button type="button" variant="ghost" onClick={() => catalog.refetch()}>Retry</Button></div>
                 : results.length ? results.map((product, index) => {
                   const added = quantities.get(itemKey(product));
-                  const full = items.length >= 100 && !added;
+                  const full = items.length >= maxLines && !added;
                   return <div key={itemKey(product)} role="presentation" className="invoice-result-row flex items-stretch">
                   <button type="button" id={`invoice-result-${index}`} data-result-index={index}
                     role="option" aria-selected={index === activeResult} disabled={full}

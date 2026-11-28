@@ -201,7 +201,7 @@ export const handler: Handler = async event => {
         || (shipping_label !== null && (typeof shipping_label !== "string" || shipping_label.trim().length > 60))
         || (!isUpdate && price_tier !== null && (typeof price_tier !== "string" || !tierSlug.test(price_tier)))
         || (customer_email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customer_email.trim()))
-        || !Array.isArray(items) || items.length < 1 || items.length > 100
+        || !Array.isArray(items) || items.length < 1 || items.length > 300
         || items.some(item => !item || !uuid.test(item.product_id || "")
           || !itemTypes.has(item.item_type ?? "product")
           || (item.course_package_index != null && ((item.item_type ?? "product") !== "course"
